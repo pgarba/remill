@@ -72,17 +72,17 @@ InstructionLifter::InstructionLifter(const Arch *arch_,
 // this instruction will execute within the delay slot of another instruction.
 LiftStatus InstructionLifter::LiftIntoBlock(Instruction &inst,
                                             llvm::BasicBlock *block,
-                                            bool is_delayed) {
+                                            bool is_delayed, llvm::CallInst **CIInstruction) {
   return LiftIntoBlock(inst, block,
                        NthArgument(block->getParent(), kStatePointerArgNum),
-                       is_delayed);
+                       is_delayed, CIInstruction);
 }
 
 // Lift a single instruction into a basic block.
 LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
                                             llvm::BasicBlock *block,
                                             llvm::Value *state_ptr,
-                                            bool is_delayed) {
+                                            bool is_delayed, llvm::CallInst **CIInstruction) {
 
   llvm::Function *const func = block->getParent();
   llvm::Module *const module = func->getParent();
@@ -187,8 +187,12 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   // Pass in current value of the memory pointer.
   args[0] = ir.CreateLoad(mem_ptr_ref);
 
-  // Call the function that implements the instruction semantics.
-  ir.CreateStore(ir.CreateCall(isel_func, args), mem_ptr_ref);
+  // Call the function that implements the instruction semantics.  
+  auto CI = ir.CreateCall(isel_func, args);
+  if (CIInstruction) {
+    *CIInstruction = CI;
+  }
+  ir.CreateStore(CI, mem_ptr_ref);
 
   // End an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {

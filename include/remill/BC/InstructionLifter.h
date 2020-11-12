@@ -30,6 +30,7 @@ class LLVMContext;
 class IntegerType;
 class BasicBlock;
 class Value;
+class CallInst;
 }  // namespace llvm
 
 namespace remill {
@@ -66,12 +67,12 @@ class InstructionLifter {
   // this instruction will execute within the delay slot of another instruction.
   virtual LiftStatus LiftIntoBlock(Instruction &inst, llvm::BasicBlock *block,
                                    llvm::Value *state_ptr,
-                                   bool is_delayed = false);
+                                   bool is_delayed = false, llvm::CallInst **CIInstruction=nullptr);
 
   // Lift a single instruction into a basic block. `is_delayed` signifies that
   // this instruction will execute within the delay slot of another instruction.
   LiftStatus LiftIntoBlock(Instruction &inst, llvm::BasicBlock *block,
-                           bool is_delayed = false);
+                           bool is_delayed = false, llvm::CallInst **CIInstruction=nullptr);
 
   // Load the address of a register.
   llvm::Value *LoadRegAddress(llvm::BasicBlock *block, llvm::Value *state_ptr,
