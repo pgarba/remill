@@ -742,7 +742,8 @@ void Arch::InitFromSemanticsModule(llvm::Module *module) const {
     auto addr = llvm::Type::getIntNTy(*context, address_size);
     llvm::IRBuilder<> ir(block);
 
-    ir.CreateAlloca(u8, nullptr, "BRANCH_TAKEN");
+    // SATURN Use the one from the State struct
+    //ir.CreateAlloca(u8, nullptr, "BRANCH_TAKEN");
     ir.CreateAlloca(addr, nullptr, "RETURN_PC");
     ir.CreateAlloca(addr, nullptr, "MONITOR");
 

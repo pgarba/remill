@@ -1342,6 +1342,10 @@ void X86Arch::PopulateBasicBlockFunction(llvm::Module *module,
 
   (void) this->RegisterByName("PC")->AddressOf(state_ptr_arg, ir);
 
+  // SATURN BRANCH_TAKEN
+  REG(BRANCH_TAKEN, BRANCH_TAKEN, u8);
+  (void) this->RegisterByName("BRANCH_TAKEN")->AddressOf(state_ptr_arg, ir);
+
   REG(SS, seg.ss.flat, u16);
   REG(ES, seg.es.flat, u16);
   REG(GS, seg.gs.flat, u16);
