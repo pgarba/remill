@@ -23,13 +23,15 @@ add_library(remill_arch_sparc32 STATIC
 
   "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC32/Runtime/State.h"
   "${REMILL_INCLUDE_DIR}/remill/Arch/SPARC32/Runtime/Types.h"
-  
+
   Arch.cpp
   Decode.h
   Extract.cpp
 )
 
-add_subdirectory(Runtime)
+if(${REMILL_BUILD_SPARC32_RUNTIME})
+  add_subdirectory(Runtime)
+endif()
 
 set_property(TARGET remill_arch_sparc32 PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -39,6 +41,5 @@ target_link_libraries(remill_arch_sparc32 LINK_PUBLIC
 
 install(
   TARGETS remill_arch_sparc32
-  ARCHIVE DESTINATION "${REMILL_INSTALL_LIB_DIR}"
-  PUBLIC_HEADER DESTINATION "${REMILL_INSTALL_INCLUDE_DIR}"
+  EXPORT remillTargets
 )

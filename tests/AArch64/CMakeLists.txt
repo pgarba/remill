@@ -12,12 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-find_package(gtest REQUIRED)
-
-# google gtest
-find_package(gtest REQUIRED)
-list(APPEND PROJECT_LIBRARIES ${gtest_LIBRARIES})
-list(APPEND PROJECT_INCLUDEDIRECTORIES ${gtest_INCLUDE_DIRS})
+find_package(GTest CONFIG REQUIRED)
+list(APPEND PROJECT_LIBRARIES GTest::gtest)
 
 enable_testing()
 enable_language(ASM)

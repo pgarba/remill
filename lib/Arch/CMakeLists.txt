@@ -16,12 +16,13 @@ add_library(remill_arch STATIC
   "${REMILL_INCLUDE_DIR}/remill/Arch/Arch.h"
   "${REMILL_INCLUDE_DIR}/remill/Arch/Instruction.h"
   "${REMILL_INCLUDE_DIR}/remill/Arch/Name.h"
-  
+
   Arch.cpp
   Instruction.cpp
   Name.cpp
 )
 
+add_subdirectory(AArch32)
 add_subdirectory(AArch64)
 add_subdirectory(SPARC32)
 add_subdirectory(SPARC64)
@@ -30,15 +31,14 @@ add_subdirectory(X86)
 set_property(TARGET remill_arch PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(remill_arch LINK_PUBLIC
-  remill_settings
+  remill_arch_aarch32
   remill_arch_aarch64
   remill_arch_sparc32
   remill_arch_sparc64
   remill_arch_x86
+  LINK_PRIVATE
+  remill_settings
 )
 
-install(
-  TARGETS remill_arch
-  ARCHIVE DESTINATION "${REMILL_INSTALL_LIB_DIR}"
-  PUBLIC_HEADER DESTINATION "${REMILL_INSTALL_INCLUDE_DIR}"
-)
+install(TARGETS remill_arch
+  EXPORT remillTargets)
