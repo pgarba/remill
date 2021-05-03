@@ -39,11 +39,15 @@ class Arch;
 class Instruction;
 class IntrinsicTable;
 class Operand;
+class OperandExpression;
 class TraceLifter;
 
 enum LiftStatus {
   kLiftedInvalidInstruction,
   kLiftedUnsupportedInstruction,
+  kLiftedLifterError,
+  kLiftedUnknownISEL,
+  kLiftedMismatchedISEL,
   kLiftedInstruction
 };
 
@@ -109,6 +113,18 @@ class InstructionLifter {
   virtual llvm::Value *LiftImmediateOperand(Instruction &inst,
                                             llvm::BasicBlock *block,
                                             llvm::Argument *arg, Operand &op);
+
+  // Lift an expression operand.
+  virtual llvm::Value *LiftExpressionOperand(Instruction &inst,
+                                             llvm::BasicBlock *block,
+                                             llvm::Value *state_ptr,
+                                             llvm::Argument *arg, Operand &op);
+
+  // Lift an expression operand.
+  virtual llvm::Value *
+  LiftExpressionOperandRec(Instruction &inst, llvm::BasicBlock *block,
+                           llvm::Value *state_ptr, llvm::Argument *arg,
+                           const OperandExpression *op);
 
   // Lift an indirect memory operand to a value.
   virtual llvm::Value *

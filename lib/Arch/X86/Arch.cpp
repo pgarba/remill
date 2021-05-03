@@ -30,14 +30,13 @@
 #include <sstream>
 #include <string>
 
+#include "XED.h"
 #include "remill/Arch/Instruction.h"
 #include "remill/Arch/Name.h"
 #include "remill/BC/ABI.h"
 #include "remill/BC/Util.h"
 #include "remill/BC/Version.h"
 #include "remill/OS/OS.h"
-
-#include "XED.h"
 
 // clang-format off
 #define HAS_FEATURE_AVX 1
@@ -571,10 +570,9 @@ static void DecodeRegister(Instruction &inst, const xed_decoded_inst_t *xedd,
   if (xed_operand_written(xedo)) {
     op.action = Operand::kActionWrite;
     if (Is64Bit(inst.arch_name)) {
-      if (XED_REG_GPR32_FIRST <= reg && XED_REG_GPR32_LAST > reg) {
-        op.reg.name[0] = 'R';  // Convert things like `EAX` into `RAX`.
-        op.size = 64;
-        op.reg.size = 64;
+      if (XED_REG_GPR32_FIRST <= reg && XED_REG_GPR32_LAST >= reg) {
+        op.reg = RegOp(xed_get_largest_enclosing_register(reg));
+        op.size = op.reg.size;
 
       } else if (XED_REG_XMM_FIRST <= reg && XED_REG_ZMM_LAST >= reg) {
         if (kArchAMD64_AVX512 == inst.arch_name) {
@@ -809,7 +807,6 @@ class X86Arch final : public Arch {
                                   llvm::Function *bb_func) const override;
 
  private:
-
   X86Arch(void) = delete;
 };
 
@@ -1067,8 +1064,8 @@ bool X86Arch::DecodeInstruction(uint64_t address, std::string_view inst_bytes,
 
   if (xed_decoded_inst_is_xacquire(xedd) ||
       xed_decoded_inst_is_xrelease(xedd)) {
-    LOG(ERROR) << "Ignoring XACQUIRE/XRELEASE prefix at " << std::hex
-               << inst.pc << std::dec;
+    LOG(ERROR) << "Ignoring XACQUIRE/XRELEASE prefix at " << std::hex << inst.pc
+               << std::dec;
   }
 
   // Make sure we disallow decoding of AVX instructions when running with non-

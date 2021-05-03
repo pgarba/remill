@@ -28,6 +28,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #pragma clang diagnostic pop
+
 // clang-format on
 
 #include <array>
@@ -43,6 +44,7 @@ namespace llvm {
 class Argument;
 class BasicBlock;
 class CallInst;
+class Constant;
 class Function;
 class FunctionType;
 class GlobalObject;
@@ -134,8 +136,7 @@ llvm::Value *LoadBranchTakenRef(llvm::BasicBlock *block);
 llvm::Function *FindFunction(llvm::Module *M, std::string_view name);
 
 // Find a global variable with name `name` in the module `M`.
-llvm::GlobalVariable *FindGlobaVariable(llvm::Module *M,
-                                        std::string_view name);
+llvm::GlobalVariable *FindGlobaVariable(llvm::Module *M, std::string_view name);
 
 // Try to verify a module.
 bool VerifyModule(llvm::Module *module);
@@ -247,6 +248,12 @@ std::vector<llvm::CallInst *> CallersOf(llvm::Function *func);
 // Returns the name of a module.
 std::string ModuleName(llvm::Module *module);
 std::string ModuleName(const std::unique_ptr<llvm::Module> &module);
+
+// Replace all uses of a constant `old_c` with `new_c` inside of `module`.
+//
+// Returns the number of constant uses of `old_c`.
+unsigned ReplaceAllUsesOfConstant(llvm::Constant *old_c, llvm::Constant *new_c,
+                                  llvm::Module *module);
 
 // Move a function from one module into another module.
 void MoveFunctionIntoModule(llvm::Function *func, llvm::Module *dest_module);
