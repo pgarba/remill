@@ -488,7 +488,7 @@ static void DecodeMemory(Instruction &inst, const xed_decoded_inst_t *xedd,
   op.addr.scale = XED_REG_INVALID != index ? static_cast<int64_t>(scale) : 0;
   op.addr.displacement = disp;
 
-  // PC-relative memory accesses are relative to the next PC.
+  // "PC"-relative memory accesses are relative to the next PC.
   if (XED_REG_RIP == base_wide) {
     op.addr.base_reg.name = "NEXT_PC";
   }
@@ -1513,8 +1513,7 @@ void X86Arch::PopulateRegisterTable(void) const {
   }
 
   // SATURN BRANCH_TAKEN
-  REG(BRANCH_TAKEN, BRANCH_TAKEN, u8);
-  (void) this->RegisterByName("BRANCH_TAKEN")->AddressOf(state_ptr_arg, ir);
+  REG(BRANCH_TAKEN, BRANCH_TAKEN, u8);  
 
   REG(SS, seg.ss.flat, u16);
   REG(ES, seg.es.flat, u16);
@@ -1752,6 +1751,9 @@ void X86Arch::PopulateBasicBlockFunction(llvm::Module *module,
   ir.CreateStore(pc_arg, ir.CreateAlloca(addr, nullptr, "NEXT_PC"));
 
   (void) this->RegisterByName("PC")->AddressOf(state_ptr_arg, ir);
+
+  // SATURN
+  (void) this->RegisterByName("BRANCH_TAKEN")->AddressOf(state_ptr_arg, ir);
 
   ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "CSBASE"));
 
