@@ -31,7 +31,7 @@ Remill's Linux version can also be built via Docker for quicker testing.
 
 ## Dependencies
 
-Most of Remill's dependencies can be provided by the [cxx-common](https://github.com/trailofbits/cxx-common) repository. Trail of Bits hosts downloadable, pre-built versions of cxx-common, which makes it substantially easier to get up and running with Remill. Nonetheless, the following table represents most of Remill's dependencies.
+Most of Remill's dependencies can be provided by the [cxx-common](https://github.com/lifting-bits/cxx-common) repository. Trail of Bits hosts downloadable, pre-built versions of cxx-common, which makes it substantially easier to get up and running with Remill. Nonetheless, the following table represents most of Remill's dependencies.
 
 | Name | Version |
 | ---- | ------- |
@@ -40,8 +40,8 @@ Most of Remill's dependencies can be provided by the [cxx-common](https://github
 | [Google Flags](https://github.com/google/glog) | Latest |
 | [Google Log](https://github.com/google/glog) | Latest |
 | [Google Test](https://github.com/google/googletest) | Latest |
-| [LLVM](http://llvm.org/) | 3.5+ |
-| [Clang](http://clang.llvm.org/) | 3.5+ |
+| [LLVM](http://llvm.org/) | 12 |
+| [Clang](http://clang.llvm.org/) | 12 |
 | [Intel XED](https://software.intel.com/en-us/articles/xed-x86-encoder-decoder-software-library) | Latest |
 | [Python](https://www.python.org/) | 2.7 |
 | Unzip | Latest |
@@ -51,11 +51,11 @@ Most of Remill's dependencies can be provided by the [cxx-common](https://github
 
 ### Docker Build
 
-Remill now comes with a Dockerfile for easier testing. This Dockerfile references the [cxx-common](https://github.com/trailofbits/cxx-common) container to have all pre-requisite libraries available.
+Remill now comes with a Dockerfile for easier testing. This Dockerfile references the [cxx-common](https://github.com/lifting-bits/cxx-common) container to have all pre-requisite libraries available.
 
 The Dockerfile allows for quick builds of multiple supported LLVM, architecture, and Linux configurations.
 
-Quickstart (builds Remill against LLVM 11 on Ubuntu 18.04 for AMD64):
+Quickstart (builds Remill against LLVM 12 on Ubuntu 18.04 for AMD64):
 
 Clone Remill:
 ```shell
@@ -71,7 +71,7 @@ docker build . -t remill \
      -f Dockerfile \
      --build-arg UBUNTU_VERSION=18.04 \
      --build-arg ARCH=amd64 \
-     --build-arg LLVM_VERSION=11
+     --build-arg LLVM_VERSION=12
 ```
 
 Ensure remill works:
@@ -140,7 +140,7 @@ make test
 
 ### Full Source Builds
 
-Sometimes, you want to build everything from source, including the [cxx-common](https://github.com/trailofbits/cxx-common) libraries remill depends on. To build against a custom cxx-common location, you can use the following `cmake` invocation:
+Sometimes, you want to build everything from source, including the [cxx-common](https://github.com/lifting-bits/cxx-common) libraries remill depends on. To build against a custom cxx-common location, you can use the following `cmake` invocation:
 
 ```sh
 mkdir build

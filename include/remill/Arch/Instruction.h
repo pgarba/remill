@@ -88,6 +88,7 @@ class Operand {
     uint64_t shift_size;
     uint64_t extract_size;
     bool shift_first;
+    bool can_shift_op_size{false};
 
     enum Shift : uint8_t {
       kShiftInvalid,
@@ -197,8 +198,16 @@ class Instruction {
   uint64_t branch_taken_pc;
   uint64_t branch_not_taken_pc;
 
-  // Name of this instruction's architecture.
+  // Name of the architecture used to decode this instruction.
   ArchName arch_name;
+
+  // Name of the minimum instruction set associated with this instruction.
+  // Remill's semantics are versioned by sub-architecture, and this tells us
+  // what the minimum such sub-architecture is needed to support the semantics
+  // of this instruction. This information permits higher-level tools to then
+  // figure out the minimum architecture needed in order to lift some set
+  // of instructions.
+  ArchName sub_arch_name;
 
   // Pointer to the `remill::Arch` used to complete the decoding of this
   // instruction.
@@ -214,6 +223,12 @@ class Instruction {
 
   // Is this instruction decoded within the context of a delay slot?
   bool in_delay_slot;
+
+  // For x86 it is possible to specify a prefix that overrides the default
+  // segment register. This attribute by itself is currently not used directly
+  // by the lifter - it is expeted `Operand`s will include segment reg where appropriate
+  // but it can be used in different applications.
+  const Register *segment_override = nullptr;
 
   enum Category {
     kCategoryInvalid,
