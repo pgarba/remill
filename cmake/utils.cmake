@@ -1,63 +1,5 @@
 cmake_minimum_required(VERSION 3.2)
 
-function(FindAndSelectClangCompiler)
-  if(DEFINED ENV{LLVM_INSTALL_PREFIX})
-    set(LLVM_INSTALL_PREFIX $ENV{LLVM_INSTALL_PREFIX} PARENT_SCOPE)
-  endif()
-
-  if(DEFINED LLVM_INSTALL_PREFIX)
-    list(APPEND FINDPACKAGE_LLVM_HINTS "${LLVM_INSTALL_PREFIX}/lib/cmake/llvm/")
-    list(APPEND FINDPACKAGE_LLVM_HINTS "${LLVM_INSTALL_PREFIX}/share/llvm/cmake/")
-    set(FINDPACKAGE_LLVM_HINTS ${FINDPACKAGE_LLVM_HINTS} PARENT_SCOPE)
-
-    message(STATUS "Using LLVM_INSTALL_PREFIX hints for find_package(LLVM): ${FINDPACKAGE_LLVM_HINTS}")
-  endif()
-
-  if(DEFINED WIN32)
-    set(executable_extension ".exe")
-  else()
-    set(executable_extension "")
-  endif()
-
-  # it is important to avoid re-defining these variables if they have been already
-  # set or you risk ending up in a configure loop!
-  if(NOT DEFINED CMAKE_C_COMPILER)
-    if(DEFINED LLVM_INSTALL_PREFIX)
-      set(CMAKE_C_COMPILER "${LLVM_INSTALL_PREFIX}/bin/clang${executable_extension}"
-        CACHE PATH "Path to clang binary." FORCE)
-    else()
-      set(CMAKE_C_COMPILER "clang" PARENT_SCOPE)
-    endif()
-  endif()
-
-  if(NOT DEFINED CMAKE_CXX_COMPILER)
-    if(DEFINED LLVM_INSTALL_PREFIX)
-      set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PREFIX}/bin/clang++${executable_extension}"
-        CACHE PATH "Path to clang++ binary." FORCE)
-    else()
-      set(CMAKE_CXX_COMPILER "clang++${executable_extension}" PARENT_SCOPE)
-    endif()
-  endif()
-
-  if(NOT DEFINED CMAKE_ASM_COMPILER)
-    if(DEFINED LLVM_INSTALL_PREFIX)
-      set(CMAKE_ASM_COMPILER "${LLVM_INSTALL_PREFIX}/bin/clang++${executable_extension}"
-        CACHE PATH "Path to assembler (aka clang) binary." FORCE)
-    else()
-      set(CMAKE_ASM_COMPILER ${CMAKE_CXX_COMPILER} PARENT_SCOPE)
-    endif()
-  endif()
-
-  if(NOT DEFINED CMAKE_LLVM_LINK)
-    if(DEFINED LLVM_INSTALL_PREFIX)
-      set(CMAKE_LLVM_LINK "${LLVM_INSTALL_PREFIX}/bin/llvm-link${executable_extension}"
-        CACHE PATH "Path to llvm-link binary." FORCE)
-    else()
-      set(CMAKE_LLVM_LINK "llvm-link${executable_extension}" PARENT_SCOPE)
-    endif()
-  endif()
-endfunction()
-
 function(GetTargetTree output_variable)
   if(${ARGC} LESS 1)
     message(FATAL_ERROR "Usage: GetTargetTree output_var target1 target2 ...")
@@ -158,7 +100,7 @@ function(GetPublicIncludeFolders output_variable)
   set("${output_variable}" ${collected_include_dirs} PARENT_SCOPE)
 endfunction()
 
-function(InstallExternalTarget target_name target_path install_directory installed_file_name)
+function(InstallExternalTarget target_name target_path install_type installed_file_name)
   # Get the optional rpath parameter
   set(additional_arguments ${ARGN})
   list(LENGTH additional_arguments additional_argument_count)
@@ -195,8 +137,8 @@ function(InstallExternalTarget target_name target_path install_directory install
     message(FATAL_ERROR "InstallExternalTarget: The following target already exists: ${target_name}")
   endif()
 
-  if("${install_directory}" STREQUAL "")
-    message(FATAL_ERROR "InstallExternalTarget: Invalid install directory specified")
+  if("${install_type}" STREQUAL "")
+    message(FATAL_ERROR "InstallExternalTarget: Invalid install type specified")
   endif()
 
   # Generate the target
@@ -218,7 +160,7 @@ function(InstallExternalTarget target_name target_path install_directory install
   add_custom_target("${target_name}" ALL DEPENDS "${output_file_path}")
 
   install(FILES "${output_file_path}"
-    DESTINATION "${install_directory}"
+    TYPE ${install_type}
     PERMISSIONS OWNER_READ OWNER_EXECUTE
                 GROUP_READ GROUP_EXECUTE
                 WORLD_READ WORLD_EXECUTE

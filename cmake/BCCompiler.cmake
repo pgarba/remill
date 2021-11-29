@@ -164,8 +164,13 @@ function(add_runtime target_name)
       set(additional_windows_settings "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
     endif()
 
+  if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(target_decl "-target" "x86_64-apple-macosx11.0.0")
+  endif()
+
+
     add_custom_command(OUTPUT "${absolute_output_file_path}"
-      COMMAND "${CMAKE_BC_COMPILER}" ${include_directory_list} ${additional_windows_settings} "-DADDRESS_SIZE_BITS=${address_size}" ${definition_list} ${DEFAULT_BC_COMPILER_FLAGS} ${bc_flag_list} ${source_file_option_list} -c "${absolute_source_file_path}" -o "${absolute_output_file_path}"
+      COMMAND "${CMAKE_BC_COMPILER}" ${include_directory_list} ${additional_windows_settings} ${target_decl}  "-DADDRESS_SIZE_BITS=${address_size}" ${definition_list} ${DEFAULT_BC_COMPILER_FLAGS} ${bc_flag_list} ${source_file_option_list} -c "${absolute_source_file_path}" -o "${absolute_output_file_path}"
       MAIN_DEPENDENCY "${absolute_source_file_path}"
       ${dependency_list_directive}
       COMMENT "Building BC object ${absolute_output_file_path}"
@@ -187,8 +192,10 @@ function(add_runtime target_name)
 
   add_custom_target("${target_name}" ALL DEPENDS "${absolute_target_path}")
   set_property(TARGET "${target_name}" PROPERTY LOCATION "${absolute_target_path}")
-
-  if(DEFINED install_destination)
-    install(FILES "${absolute_target_path}" DESTINATION "${install_destination}")
+  
+  if(REMILL_ENABLE_INSTALL_TARGET)
+    if(DEFINED install_destination)
+      install(FILES "${absolute_target_path}" DESTINATION "${install_destination}")
+    endif()
   endif()
 endfunction()

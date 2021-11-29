@@ -124,6 +124,8 @@ struct Register {
 
   // The directly enclosed registers.
   std::vector<const Register *> children;
+
+  void CompteGEPAccessors(const llvm::DataLayout &dl, llvm::Type *state_type);
 };
 
 class Arch {
@@ -174,7 +176,7 @@ class Arch {
   virtual std::string_view ProgramCounterRegisterName(void) const = 0;
 
   // Converts an LLVM module object to have the right triple / data layout
-  // information for the target architecture and ensures remill requied functions
+  // information for the target architecture and ensures remill required functions
   // have the appropriate prototype and internal variables
   void PrepareModule(llvm::Module *mod) const;
 
@@ -198,6 +200,16 @@ class Arch {
   }
 
   // Decode an instruction.
+  //
+  // NOTE(pag): If you give `DecodeInstruction` a bunch of bytes, then it will
+  //            opportunistically look for opportunities to recognize some
+  //            simple idioms and fuse them (e.g. `call; pop` on x86,
+  //            `sethi; or` on sparc). If you don't want to decode idioms, then
+  //            one usage pattern to avoid them is to start with
+  //            `MinInstructionSize()` bytes, and if that fails to decode, then
+  //            walk up, one byte at a time, to `MaxInstructionSize(false)`
+  //            bytes being passed to the decoder, until you successfully decode
+  //            or ultimately fail.
   virtual bool DecodeInstruction(uint64_t address, std::string_view instr_bytes,
                                  Instruction &inst) const = 0;
 
@@ -208,8 +220,18 @@ class Arch {
     return this->DecodeInstruction(address, instr_bytes, inst);
   }
 
+  // Minimum alignment of an instruction for this particular architecture.
+  virtual uint64_t MinInstructionAlign(void) const = 0;
+
+  // Minimum number of bytes in an instruction for this particular architecture.
+  virtual uint64_t MinInstructionSize(void) const = 0;
+
   // Maximum number of bytes in an instruction for this particular architecture.
-  virtual uint64_t MaxInstructionSize(void) const = 0;
+  //
+  // `permit_fuse_idioms` is `true` if Remill is allowed to decode multiple
+  // instructions at a time and look for instruction fusing idioms that are
+  // common to this architecture.
+  virtual uint64_t MaxInstructionSize(bool permit_fuse_idioms=true) const = 0;
 
   // Default calling convention for this architecture.
   virtual llvm::CallingConv::ID DefaultCallingConv(void) const = 0;
@@ -261,17 +283,15 @@ class Arch {
   static ArchPtr Build(llvm::LLVMContext *context, OSName os,
                        ArchName arch_name);
 
-  // Get the architecture of the modelled code. This is based on command-line
-  // flags. Rather use directly Build.
-  static ArchPtr GetTargetArch(llvm::LLVMContext &context)
-      __attribute__((deprecated));
-
   // Get the (approximate) architecture of the system library was built on. This may not
   // include all feature sets.
   static ArchPtr GetHostArch(llvm::LLVMContext &contex);
 
  protected:
   Arch(llvm::LLVMContext *context_, OSName os_name_, ArchName arch_name_);
+
+  // Populate the table of register information.
+  virtual void PopulateRegisterTable(void) const = 0;
 
   // Populate the `__remill_basic_block` function with variables.
   virtual void PopulateBasicBlockFunction(llvm::Module *module,
@@ -304,9 +324,10 @@ class Arch {
   static ArchPtr GetSPARC64(llvm::LLVMContext *context, OSName os,
                             ArchName arch_name);
 
-  mutable std::unique_ptr<ArchImpl> impl;
-
   Arch(void) = delete;
+
+ protected:
+  mutable std::unique_ptr<ArchImpl> impl;
 };
 
 }  // namespace remill

@@ -18,6 +18,7 @@ add_library(remill_arch STATIC
   "${REMILL_INCLUDE_DIR}/remill/Arch/Name.h"
 
   Arch.cpp
+  Arch.h
   Instruction.cpp
   Name.cpp
 )
@@ -40,5 +41,7 @@ target_link_libraries(remill_arch LINK_PUBLIC
   remill_settings
 )
 
-install(TARGETS remill_arch
-  EXPORT remillTargets)
+if(REMILL_ENABLE_INSTALL_TARGET)
+  install(TARGETS remill_arch
+    EXPORT remillTargets)
+endif()

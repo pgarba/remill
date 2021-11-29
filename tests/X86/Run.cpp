@@ -90,26 +90,16 @@ static sigjmp_buf gUnsupportedInstrBuf;
 // Are we running in a native test case or a lifted one?
 static bool gInNativeTest = false;
 
-// Long doubles may be represented as 16-byte values depending on LLVM's
-// `DataLayout`, so we marshal into this format.
-struct alignas(16) LongDoubleStorage {
-  float80_t val;
-  uint16_t padding;
-} __attribute__((packed));
-
-static_assert(16 == sizeof(LongDoubleStorage),
-              "Invalid structure packing of `LongDoubleStorage`");
-
 extern "C" {
 
 // Native state before we run the native test case. We then use this as the
 // initial state for the lifted testcase. The lifted test case code mutates
 // this, and we require that after running the lifted testcase, `gLiftedState`
 // matches `gNativeState`,
-std::aligned_storage<sizeof(X86State), alignof(X86State)>::type gLiftedState;
+std::aligned_storage<sizeof(State), alignof(State)>::type gLiftedState;
 
 // Native state after running the native test case.
-std::aligned_storage<sizeof(X86State), alignof(X86State)>::type gNativeState;
+std::aligned_storage<sizeof(State), alignof(State)>::type gNativeState;
 
 // The RFLAGS to run the test with.
 Flags gRflagsForTest = {};
@@ -188,33 +178,20 @@ MAKE_RW_MEMORY(64)
 
 MAKE_RW_FP_MEMORY(32)
 MAKE_RW_FP_MEMORY(64)
+//MAKE_RW_FP_MEMORY(80)
+MAKE_RW_FP_MEMORY(128)
 
-NEVER_INLINE float64_t __remill_read_memory_f80(Memory *, addr_t addr) {
-  LongDoubleStorage storage;
-  storage.val = AccessMemory<float80_t>(addr);
-  auto val_long = *reinterpret_cast<long double *>(&storage);
-  return static_cast<float64_t>(val_long);
-}
-
-NEVER_INLINE float64_t __remill_read_memory_f128(Memory *, addr_t) {
-  LOG(FATAL) << "Unsupported on x86/amd64";
-  return 0.0;
-}
-
-NEVER_INLINE Memory *__remill_write_memory_f80(Memory *memory, addr_t addr,
-                                               float64_t val) {
-  LongDoubleStorage storage;
-  auto val_long = static_cast<long double>(val);
-  memcpy(&storage, &val_long, sizeof(val_long));
-  AccessMemory<float80_t>(addr) = storage.val;
-  return memory;
-}
-
-NEVER_INLINE Memory *__remill_write_memory_f128(Memory *, addr_t, double) {
-  LOG(FATAL) << "Unsupported on x86/amd64";
+NEVER_INLINE Memory *__remill_read_memory_f80(Memory *, addr_t addr,
+                                              native_float80_t &out) {
+  out = AccessMemory<native_float80_t>(addr);
   return nullptr;
 }
 
+NEVER_INLINE Memory *__remill_write_memory_f80(Memory *, addr_t addr,
+                                               const native_float80_t &in) {
+  AccessMemory<native_float80_t>(addr) = in;
+  return nullptr;
+}
 
 Memory *__remill_compare_exchange_memory_8(Memory *memory, addr_t addr,
                                            uint8_t &expected, uint8_t desired) {
@@ -338,15 +315,15 @@ Memory *__remill_delay_slot_end(Memory *) {
 }
 void __remill_defer_inlining(void) {}
 
-Memory *__remill_error(X86State &, addr_t, Memory *) {
+Memory *__remill_error(State &, addr_t, Memory *) {
   siglongjmp(gJmpBuf, 0);
 }
 
-Memory *__remill_missing_block(X86State &, addr_t, Memory *memory) {
+Memory *__remill_missing_block(State &, addr_t, Memory *memory) {
   return memory;
 }
 
-Memory *__remill_sync_hyper_call(X86State &state, Memory *mem,
+Memory *__remill_sync_hyper_call(State &state, Memory *mem,
                                  SyncHyperCall::Name call) {
   switch (call) {
     case SyncHyperCall::kX86CPUID:
@@ -401,19 +378,19 @@ Memory *__remill_write_io_port_32(Memory *, addr_t, uint32_t) {
   abort();
 }
 
-Memory *__remill_function_call(X86State &, addr_t, Memory *) {
+Memory *__remill_function_call(State &, addr_t, Memory *) {
   abort();
 }
 
-Memory *__remill_function_return(X86State &, addr_t, Memory *) {
+Memory *__remill_function_return(State &, addr_t, Memory *) {
   abort();
 }
 
-Memory *__remill_jump(X86State &, addr_t, Memory *) {
+Memory *__remill_jump(State &, addr_t, Memory *) {
   abort();
 }
 
-Memory *__remill_async_hyper_call(X86State &, addr_t, Memory *) {
+Memory *__remill_async_hyper_call(State &, addr_t, Memory *) {
   abort();
 }
 
@@ -441,6 +418,67 @@ float64_t __remill_undefined_f64(void) {
   return 0.0;
 }
 
+float80_t __remill_undefined_f80(void) {
+  return {0};
+}
+
+bool __remill_flag_computation_zero(bool result, ...) {
+  return result;
+}
+
+bool __remill_flag_computation_sign(bool result, ...) {
+  return result;
+}
+
+bool __remill_flag_computation_overflow(bool result, ...) {
+  return result;
+}
+
+bool __remill_flag_computation_carry(bool result, ...) {
+  return result;
+}
+
+bool __remill_compare_sle(bool result) {
+  return result;
+}
+
+bool __remill_compare_slt(bool result) {
+  return result;
+}
+
+bool __remill_compare_sge(bool result) {
+  return result;
+}
+
+bool __remill_compare_sgt(bool result) {
+  return result;
+}
+
+
+bool __remill_compare_ule(bool result) {
+  return result;
+}
+
+bool __remill_compare_ult(bool result) {
+  return result;
+}
+
+bool __remill_compare_ugt(bool result) {
+  return result;
+}
+
+bool __remill_compare_uge(bool result) {
+  return result;
+}
+
+bool __remill_compare_eq(bool result) {
+  return result;
+}
+
+bool __remill_compare_neq(bool result) {
+  return result;
+}
+
 // Marks `mem` as being used. This is used for making sure certain symbols are
 // kept around through optimization, and makes sure that optimization doesn't
 // perform dead-argument elimination on any of the intrinsics.
@@ -450,7 +488,7 @@ void __remill_mark_as_used(void *mem) {
 
 }  // extern C
 
-typedef Memory *(LiftedFunc)(X86State &, addr_t, Memory *);
+typedef Memory *(LiftedFunc) (State &, addr_t, Memory *);
 
 // Mapping of test name to translated function.
 static std::map<uint64_t, LiftedFunc *> gTranslatedFuncs;
@@ -496,9 +534,9 @@ static bool AreFCSAndFDSDeprecated(void) {
 
 #endif  // 32 == ADDRESS_SIZE_BITS
 
-// Convert some native state, stored in various ways, into the `X86State` structure
+// Convert some native state, stored in various ways, into the `State` structure
 // type.
-static void ImportX87X86State(X86State *state) {
+static void ImportX87State(State *state) {
   auto &fpu = state->x87;
 
   // Looks like MMX state.
@@ -520,12 +558,12 @@ static void ImportX87X86State(X86State *state) {
       }
     }
 
-  // Looks like X87 state.
+    // Looks like X87 state.
   } else {
     DLOG(INFO) << "Importing FPU state.";
     for (size_t i = 0; i < 8; ++i) {
       auto st = *reinterpret_cast<long double *>(&(fpu.fxsave.st[i].st));
-      state->st.elems[i].val = static_cast<float64_t>(st);
+      state->st.elems[i].val = static_cast<float80_t>(st);
     }
   }
 
@@ -606,8 +644,8 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
   memset(&gLiftedState, 0, sizeof(gLiftedState));
   memset(&gNativeState, 0, sizeof(gNativeState));
 
-  auto lifted_state = reinterpret_cast<X86State *>(&gLiftedState);
-  auto native_state = reinterpret_cast<X86State *>(&gNativeState);
+  auto lifted_state = reinterpret_cast<State *>(&gLiftedState);
+  auto native_state = reinterpret_cast<State *>(&gNativeState);
 
   // Set up the run's info.
   gTestToRun = info->test_begin;
@@ -628,7 +666,7 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
     native_test_faulted = true;
   }
 
-  ImportX87X86State(native_state);
+  ImportX87State(native_state);
   ResetFlags();
 
   // Set up the RIP correctly.
@@ -753,12 +791,21 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
   native_state->hyper_call = AsyncHyperCall::kInvalid;
   lifted_state->hyper_call = AsyncHyperCall::kInvalid;
 
+  lifted_state->x87.fsave.cwd._rsvd0 = native_state->x87.fsave.cwd._rsvd0 = 0;
+  lifted_state->x87.fsave.cwd._rsvd1 = native_state->x87.fsave.cwd._rsvd1 = 0;
+  lifted_state->x87.fsave._rsvd0 = native_state->x87.fsave._rsvd0 = 0;
+  lifted_state->x87.fsave._rsvd1 = native_state->x87.fsave._rsvd1 = 0;
+  lifted_state->x87.fsave._rsvd2 = native_state->x87.fsave._rsvd2 = 0;
+  lifted_state->x87.fsave._rsvd3 = native_state->x87.fsave._rsvd3 = 0;
+  std::memset(lifted_state->sw._padding, 0, 4);
+  std::memset(native_state->sw._padding, 0, 4);
+
   // Compare the FPU states.
   for (auto i = 0U; i < 8U; ++i) {
     auto lifted_st = lifted_state->st.elems[i].val;
     auto native_st = native_state->st.elems[i].val;
     if (lifted_st != native_st) {
-      if (fabs(lifted_st - native_st) <= 1e-14) {
+      if (std::abs(lifted_st - native_st) <= 1e-14) {
         lifted_state->st.elems[i].val = native_st;  // Hide the inconsistency.
       }
     }
@@ -865,10 +912,34 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
     auto lifted_state_bytes = reinterpret_cast<uint8_t *>(lifted_state);
     auto native_state_bytes = reinterpret_cast<uint8_t *>(native_state);
 
+// Ignore "invalid use of offsetof" warnings by clang.
+// 1) offsetof still works
+// 2) we know its invalid
+// 3) this is only used for diagnostics/debugging
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+
     for (size_t i = 0; i < sizeof(State); ++i) {
       LOG_IF(ERROR, lifted_state_bytes[i] != native_state_bytes[i])
-          << "Bytes at offset " << i << " are different";
+          << "Bytes at offset " << i << " are different: "
+          << "lifted [" << std::hex
+          << static_cast<unsigned int>(lifted_state_bytes[i]) << "] vs native ["
+          << std::hex << static_cast<unsigned int>(native_state_bytes[i])
+          << "]\n"
+          << std::dec << "vec: " << offsetof(State, vec) << "\n"
+          << "aflag:" << offsetof(State, aflag) << "\n"
+          << "rflag:" << offsetof(State, rflag) << "\n"
+          << "seg:" << offsetof(State, seg) << "\n"
+          << "addr:" << offsetof(State, addr) << "\n"
+          << "gpr:" << offsetof(State, gpr) << "\n"
+          << "st:" << offsetof(State, st) << "\n"
+          << "mmx:" << offsetof(State, mmx) << "\n"
+          << "sw:" << offsetof(State, sw) << "\n"
+          << "xcr0:" << offsetof(State, xcr0) << "\n"
+          << "x87:" << offsetof(State, x87) << "\n"
+          << "seg_caches:" << offsetof(State, seg_caches) << "\n";
     }
+#pragma clang diagnostic pop
   }
 
   if (gLiftedStack != gNativeStack) {
@@ -946,16 +1017,20 @@ TEST_P(InstrTest, SemanticsMatchNative) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(GeneralInstrTest, InstrTest,
-                         testing::ValuesIn(gTests));
+std::string NameTest(const testing::TestParamInfo<InstrTest::ParamType> &test) {
+  return test.param->test_name;
+}
+
+INSTANTIATE_TEST_SUITE_P(GeneralInstrTest, InstrTest, testing::ValuesIn(gTests),
+                         NameTest);
 
 // Recover from a signal.
 static void RecoverFromError(int sig_num, siginfo_t *, void *context_) {
   if (gInNativeTest) {
-    memcpy(&gNativeState, &gLiftedState, sizeof(X86State));
+    memcpy(&gNativeState, &gLiftedState, sizeof(State));
 
     auto context = reinterpret_cast<ucontext_t *>(context_);
-    auto native_state = reinterpret_cast<X86State *>(&gNativeState);
+    auto native_state = reinterpret_cast<State *>(&gNativeState);
     auto &gpr = native_state->gpr;
     auto &fpu = native_state->x87;
 #ifdef __APPLE__
