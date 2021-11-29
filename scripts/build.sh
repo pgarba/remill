@@ -23,11 +23,11 @@ DOWNLOAD_DIR="$( cd "$( dirname "${SRC_DIR}" )" && pwd )/lifting-bits-downloads"
 CURR_DIR=$( pwd )
 BUILD_DIR="${CURR_DIR}/remill-build"
 INSTALL_DIR=/usr/local
-LLVM_VERSION=llvm-11
+LLVM_VERSION=llvm-12
 OS_VERSION=
 ARCH_VERSION=
 BUILD_FLAGS=
-CXX_COMMON_VERSION="v0.1.3"
+CXX_COMMON_VERSION="v0.1.5"
 
 # There are pre-build versions of various libraries for specific
 # Ubuntu releases.
@@ -88,7 +88,7 @@ function GetArchVersion
       return 0
     ;;
     aarch64)
-      ARCH_VERSION=aarch64
+      ARCH_VERSION=arm64
       return 0
     ;;
     *)
@@ -101,7 +101,7 @@ function GetArchVersion
 function DownloadVcpkgLibraries
 {
   local GITHUB_LIBS="${LIBRARY_VERSION}.tar.xz"
-  local URL="https://github.com/trailofbits/cxx-common/releases/download/${CXX_COMMON_VERSION}/${GITHUB_LIBS}"
+  local URL="https://github.com/lifting-bits/cxx-common/releases/download/${CXX_COMMON_VERSION}/${GITHUB_LIBS}"
 
   mkdir -p "${DOWNLOAD_DIR}"
   pushd "${DOWNLOAD_DIR}" || return 1
@@ -116,8 +116,6 @@ function DownloadVcpkgLibraries
     TAR_OPTIONS=""
   fi
 
-  # NOTE: export-raw is the directory that vcpkg used for exporting raw file tree
-  #   we want to rename it
   (
     set -x
     tar -xJf "${GITHUB_LIBS}" ${TAR_OPTIONS}
@@ -174,16 +172,13 @@ function DownloadLibraries
 
     #BUILD_FLAGS="${BUILD_FLAGS} -DCMAKE_OSX_SYSROOT=${sdk_root}"
     # Min version supported
-    OS_VERSION="macos-10.15"
+    OS_VERSION="macos-11"
     # Hard-coded to match pre-built binaries in CI
-    XCODE_VERSION="12.4"
-    if [[ "$(sw_vers -productVersion)" == "10.15"* ]]; then
-      echo "Found MacOS Catalina"
-      OS_VERSION="macos-10.15"
-    elif [[ "$(sw_vers -productVersion)" == "11."* ]]; then
+    XCODE_VERSION="13.0"
+    if [[ "$(sw_vers -productVersion)" == "11."* ]]; then
       echo "Found MacOS Big Sur"
       # Uses 10.15 binaries
-      OS_VERSION="macos-10.15"
+      OS_VERSION="macos-11"
     else
       echo "WARNING: ****Likely unsupported MacOS Version****"
       echo "WARNING: ****Using ${OS_VERSION}****"
@@ -233,8 +228,6 @@ function Configure
     cmake \
         -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
         -DCMAKE_VERBOSE_MAKEFILE=True \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
         -DVCPKG_ROOT="${DOWNLOAD_DIR}/${LIBRARY_VERSION}" \
         ${BUILD_FLAGS} \
         "${SRC_DIR}"
@@ -293,21 +286,13 @@ function Package
 function GetLLVMVersion
 {
   case ${1} in
-    9)
-      LLVM_VERSION=llvm-9
-      return 0
-    ;;
-    10)
-      LLVM_VERSION=llvm-10
-      return 0
-    ;;
-    11)
-      LLVM_VERSION=llvm-11
+    12)
+      LLVM_VERSION=llvm-12
       return 0
     ;;
     *)
       # unknown option
-      echo "[x] Unknown LLVM version ${1}. You may be able to manually build it with cxx-common."
+      echo "[x] Unknown or unsupported LLVM version ${1}. You may be able to manually build it with cxx-common."
       return 1
     ;;
   esac
@@ -320,7 +305,7 @@ function Help
   echo ""
   echo "Options:"
   echo "  --prefix           Change the default (${INSTALL_DIR}) installation prefix."
-  echo "  --llvm-version     Change the default (9) LLVM version."
+  echo "  --llvm-version     Change the default (12) LLVM version."
   echo "  --build-dir        Change the default (${BUILD_DIR}) build directory."
   echo "  --debug            Build with Debug symbols."
   echo "  --extra-cmake-args Extra CMake arguments to build with."

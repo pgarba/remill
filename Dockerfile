@@ -1,5 +1,5 @@
 # Choose your LLVM version
-ARG LLVM_VERSION=11
+ARG LLVM_VERSION=12
 ARG ARCH=amd64
 ARG UBUNTU_VERSION=18.04
 ARG DISTRO_BASE=ubuntu${UBUNTU_VERSION}
@@ -12,7 +12,7 @@ FROM ${BUILD_BASE} as base
 
 # Build-time dependencies go here
 # See here for full list of those dependencies
-# https://github.com/trailofbits/cxx-common/blob/master/docker/Dockerfile.ubuntu.vcpkg
+# https://github.com/lifting-bits/cxx-common/blob/master/docker/Dockerfile.ubuntu.vcpkg
 FROM trailofbits/cxx-common-vcpkg-builder-ubuntu:${UBUNTU_VERSION} as deps
 ARG UBUNTU_VERSION
 ARG ARCH
@@ -28,7 +28,7 @@ RUN apt-get update && \
 FROM deps as build
 ARG LLVM_VERSION
 
-WORKDIR /rellic
+WORKDIR /remill
 COPY ./ ./
 RUN ./scripts/build.sh \
   --llvm-version ${LLVM_VERSION} \
@@ -36,8 +36,8 @@ RUN ./scripts/build.sh \
   --extra-cmake-args "-DCMAKE_BUILD_TYPE=Release"
 
 RUN cd remill-build && \
-    cmake --build . --target test_dependencies && \
-    CTEST_OUTPUT_ON_FAILURE=1 cmake --build . --verbose --target test && \
+    cmake --build . --target test_dependencies -- -j $(nproc) && \
+    CTEST_OUTPUT_ON_FAILURE=1 cmake --build . --verbose --target test -- -j $(nproc) && \
     cmake --build . --target install
 
 # Small installation image

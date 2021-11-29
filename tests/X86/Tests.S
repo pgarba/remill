@@ -169,7 +169,7 @@ SYMBOL(FUNC_NAME(instr_name, num_args)): ; \
     CONST_SECTION
     .align 16
 SYMBOL(fpu_cwd):
-    .long 0x27F  /* Default is 0x37F */
+    .long 0x37F  /* Default is 0x37F */
 
     .align 16
 SYMBOL(vec_data):
@@ -225,8 +225,7 @@ SYMBOL(DoInvokeTestCase):
     fldz
     fninit
 
-    /* Change the precision to double precision (as opposed to the default
-     * extended precision) */
+    /* Ensure FPU is set to double extended precision */
     fldcw [RIP + SYMBOL(fpu_cwd)]
 
     /* Set the bits of some of the vector regs to 1. This makes it easier to
@@ -329,6 +328,7 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/ABI.S"
 #include "tests/X86/MMX/INPUTS.S"
 
+
 /* Change to `0` and put new `#include`s above when making new tests to speed
  * up compile and test times. */
 #if 1
@@ -357,6 +357,7 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/DATAXFER/MOVUPS.S"
 #include "tests/X86/DATAXFER/MOVZX.S"
 #include "tests/X86/DATAXFER/XCHG.S"
+#include "tests/X86/DATAXFER/KMOVW.S"
 
 /* Bring in the rest of the semantic tests. */
 
