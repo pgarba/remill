@@ -456,6 +456,9 @@ void AArch64Arch::PopulateRegisterTable(void) const {
 
   REG(TPIDR_EL0, sr.tpidr_el0.qword, u64);
   REG(TPIDRRO_EL0, sr.tpidrro_el0.qword, u64);
+
+  // SATURN BRANCH_TAKEN
+  REG(BRANCH_TAKEN, BRANCH_TAKEN, u8);
 }
 
 // Populate the `__remill_basic_block` function with variables.
@@ -478,6 +481,9 @@ void AArch64Arch::PopulateBasicBlockFunction(llvm::Module *module,
   llvm::StringRef next_pc_name(kNextPCVariableName.data(),
                                kNextPCVariableName.size());
   ir.CreateStore(pc_arg, ir.CreateAlloca(addr, nullptr, next_pc_name));
+
+  // SATURN
+  (void) this->RegisterByName("BRANCH_TAKEN")->AddressOf(state_ptr_arg, ir);
 
   ir.CreateStore(zero_u32, ir.CreateAlloca(u32, nullptr, "WZR"));
   ir.CreateStore(zero_u64, ir.CreateAlloca(u64, nullptr, "XZR"));
