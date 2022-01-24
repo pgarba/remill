@@ -296,11 +296,14 @@ struct alignas(16) AArch64State : public ArchState {
 
   SR sr;  // 56 bytes.
 
+  // SATURN
+  bool BRANCH_TAKEN; char t[15];
+
   uint64_t _3;
 
 } __attribute__((packed));
 
-static_assert((1152 + 16) == sizeof(AArch64State),
+static_assert((1152 + 16 + 16) == sizeof(AArch64State),
               "Invalid packing of `struct State`");
 
 struct State : public AArch64State {};

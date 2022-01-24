@@ -703,7 +703,8 @@ void Arch::InitializeEmptyLiftedFunction(llvm::Function *func) const {
   auto state = remill::NthArgument(func, kStatePointerArgNum);
 
   llvm::IRBuilder<> ir(block);
-  ir.CreateAlloca(u8, nullptr, "BRANCH_TAKEN");
+  // SATURN take the one from struct
+  // ir.CreateAlloca(u8, nullptr, "BRANCH_TAKEN");
   ir.CreateAlloca(addr, nullptr, "RETURN_PC");
   ir.CreateAlloca(addr, nullptr, "MONITOR");
 

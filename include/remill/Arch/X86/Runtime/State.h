@@ -784,10 +784,14 @@ struct alignas(16) X86State : public ArchState {
   XCR0 xcr0;  // 8 bytes.
   FPU x87;  // 512 bytes
   SegmentCaches seg_caches;  // 96 bytes
+
+  // SATURN
+  bool BRANCH_TAKEN; char t[15];
+
   K_REG k_reg; // 128 bytes.
 } __attribute__((packed));
 
-static_assert((96 + 3264 + 16 + 128) == sizeof(X86State),
+static_assert((96 + 3264 + 16 + 16 + 128) == sizeof(X86State),
               "Invalid packing of `struct State`");
 
 struct State : public X86State {};

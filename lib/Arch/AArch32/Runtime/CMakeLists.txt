@@ -43,6 +43,7 @@ function(add_runtime_helper target_name little_endian)
     set(arch_flags "-m32")
   endif()
 
+
   add_runtime(${target_name}
     SOURCES ${ARMRUNTIME_SOURCEFILES}
     ADDRESS_SIZE 32

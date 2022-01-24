@@ -18,23 +18,28 @@
 
 namespace {
 
-static void SerializeFlags(State &state) {
-  state.rflag.cf = state.aflag.cf;
+static uint64_t SerializeFlags(State &state) {
+  Flags f;
+
+  f.cf = state.aflag.cf;
 
   //state.rflag.must_be_1 = 1;
-  state.rflag.pf = state.aflag.pf;
+  f.pf = state.aflag.pf;
 
   //state.rflag.must_be_0a = 0;
-  state.rflag.af = state.aflag.af;
+  f.af = state.aflag.af;
 
   //state.rflag.must_be_0b = 0;
-  state.rflag.zf = state.aflag.zf;
-  state.rflag.sf = state.aflag.sf;
+  f.zf = state.aflag.zf;
+  f.sf = state.aflag.sf;
 
   //state.rflag.tf = 0;  // Trap flag (not single-stepping).
   //state.rflag._if = 1;  // Interrupts are enabled (assumes user mode).
-  state.rflag.df = state.aflag.df;
-  state.rflag.of = state.aflag.of;
+  f.df = state.aflag.df;
+  f.of = state.aflag.of;
+
+  // disable trapflag
+  f.tf = 0;
 
   //state.rflag.iopl = 0;  // In user-mode. TODO(pag): Configurable?
   //state.rflag.nt = 0;  // Not running in a nested task (interrupted interrupt).
@@ -46,6 +51,8 @@ static void SerializeFlags(State &state) {
   //state.rflag.vip = 0; // No virtual interrupts are pending.
   //state.rflag.id = 0;  // Disallow `CPUID`.  TODO(pag): Configurable?
   //state.rflag.reserved_eflags = 0;  // bits 22-31.
+
+  return f.flat;
 }
 
 }  // namespace
@@ -97,21 +104,21 @@ DEF_SEM(DoPUSHAD) {
 #endif
 
 DEF_SEM(DoPUSHF) {
-  SerializeFlags(state);
-  PushToStack<uint16_t>(memory, state, TruncTo<uint16_t>(state.rflag.flat));
+  auto f = SerializeFlags(state);
+  PushToStack<uint16_t>(memory, state, TruncTo<uint16_t>(f));
   return memory;
 }
 
 #if 32 == ADDRESS_SIZE_BITS
 DEF_SEM(DoPUSHFD) {
-  SerializeFlags(state);
-  PushToStack<uint32_t>(memory, state, TruncTo<uint32_t>(state.rflag.flat));
+  auto f = SerializeFlags(state);
+  PushToStack<uint32_t>(memory, state, TruncTo<uint32_t>(f));
   return memory;
 }
 #else
 DEF_SEM(DoPUSHFQ) {
-  SerializeFlags(state);
-  PushToStack<uint64_t>(memory, state, state.rflag.flat);
+  auto f = SerializeFlags(state);
+  PushToStack<uint64_t>(memory, state, f);
   return memory;
 }
 #endif  // 32 == ADDRESS_SIZE_BITS

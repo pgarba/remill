@@ -32,6 +32,30 @@ endif()
 
 message(STATUS "Compiler ID is ${CMAKE_C_COMPILER_ID}")
 
+
+
+# cxx-common
+if(DEFINED ENV{TRAILOFBITS_LIBRARIES})
+  set(LIBRARY_REPOSITORY_ROOT $ENV{TRAILOFBITS_LIBRARIES}
+    CACHE PATH "Location of cxx-common libraries."
+  )
+endif()
+
+if(DEFINED LIBRARY_REPOSITORY_ROOT)  
+  set(TOB_CMAKE_INCLUDE "${LIBRARY_REPOSITORY_ROOT}/cmake_modules/repository.cmake")
+  if(NOT EXISTS "${TOB_CMAKE_INCLUDE}")
+    message(FATAL_ERROR "The library repository could not be found!")
+  endif()
+
+  include("${TOB_CMAKE_INCLUDE}")
+
+  message(STATUS "cxx-common")
+  message(STATUS $ENV{TRAILOFBITS_LIBRARIES})
+
+else()
+  message(STATUS "Using system libraries")
+endif()
+
 #
 # libraries
 #
@@ -100,10 +124,13 @@ endif()
 message(STATUS "LLVM Libraries: ${LLVM_LIBRARIES}")
 
 # Intel XED
-find_package(XED CONFIG REQUIRED)
+find_package(XED REQUIRED)
 add_library(thirdparty_xed INTERFACE)
+target_include_directories(thirdparty_xed SYSTEM INTERFACE
+  ${XED_INCLUDE_DIRS}
+)
 target_link_libraries(thirdparty_xed INTERFACE
-  XED::XED
+  ${XED_LIBRARIES}
 )
 
 # Google glog module
