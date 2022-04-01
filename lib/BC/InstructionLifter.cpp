@@ -72,7 +72,8 @@ InstructionLifter::InstructionLifter(const Arch *arch_,
 // this instruction will execute within the delay slot of another instruction.
 LiftStatus InstructionLifter::LiftIntoBlock(Instruction &inst,
                                             llvm::BasicBlock *block,
-                                            bool is_delayed, llvm::CallInst **CIInstruction) {
+                                            bool is_delayed,
+                                            llvm::CallInst **CIInstruction) {
   return LiftIntoBlock(inst, block,
                        NthArgument(block->getParent(), kStatePointerArgNum),
                        is_delayed, CIInstruction);
@@ -82,7 +83,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &inst,
 LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
                                             llvm::BasicBlock *block,
                                             llvm::Value *state_ptr,
-                                            bool is_delayed, llvm::CallInst **CIInstruction) {
+                                            bool is_delayed,
+                                            llvm::CallInst **CIInstruction) {
 
   llvm::Function *const func = block->getParent();
   llvm::Module *const module = func->getParent();
@@ -119,7 +121,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   const auto pc_ref = LoadRegAddress(block, state_ptr, kPCVariableName);
   const auto next_pc_ref =
       LoadRegAddress(block, state_ptr, kNextPCVariableName);
-  const auto next_pc = ir.CreateLoad(next_pc_ref);
+  const auto next_pc = ir.CreateLoad(
+      next_pc_ref->getType()->getPointerElementType(), next_pc_ref);
 
   // If this instruction appears within a delay slot, then we're going to assume
   // that the prior instruction updated `PC` to the target of the CTI, and that
@@ -129,7 +132,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   // TODO(pag): An alternate approach may be to call some kind of `DELAY_SLOT`
   //            semantics function.
   if (is_delayed) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(mem_ptr_ref)};
+    llvm::Value *temp_args[] = {ir.CreateLoad(
+        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->delay_slot_begin, temp_args),
                    mem_ptr_ref);
 
@@ -149,7 +153,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
 
   // Begin an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(mem_ptr_ref)};
+    llvm::Value *temp_args[] = {ir.CreateLoad(
+        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->atomic_begin, temp_args),
                    mem_ptr_ref);
   }
@@ -185,9 +190,10 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   }
 
   // Pass in current value of the memory pointer.
-  args[0] = ir.CreateLoad(mem_ptr_ref);
+  args[0] = ir.CreateLoad(mem_ptr_ref->getType()->getPointerElementType(),
+                          mem_ptr_ref);
 
-  // Call the function that implements the instruction semantics.  
+  // Call the function that implements the instruction semantics.
   auto CI = ir.CreateCall(isel_func, args);
   if (CIInstruction) {
     *CIInstruction = CI;
@@ -196,7 +202,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
 
   // End an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(mem_ptr_ref)};
+    llvm::Value *temp_args[] = {ir.CreateLoad(
+        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->atomic_end, temp_args),
                    mem_ptr_ref);
   }
@@ -213,7 +220,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
     // are lifted, we do the `PC = NEXT_PC + size`, so this is fine.
     ir.CreateStore(next_pc, next_pc_ref);
 
-    llvm::Value *temp_args[] = {ir.CreateLoad(mem_ptr_ref)};
+    llvm::Value *temp_args[] = {ir.CreateLoad(
+        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->delay_slot_end, temp_args),
                    mem_ptr_ref);
   }
@@ -244,16 +252,16 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
     (void) added;
     return reg_ptr_it->second;
 
-  // It's already a variable in the function.
+    // It's already a variable in the function.
   } else if (const auto var_ptr = FindVarInFunction(func, reg_name_, true);
              var_ptr) {
     reg_ptr_it->second = var_ptr;
     return var_ptr;
 
-  // It's a register known to this architecture, so go and build a GEP to it
-  // right now. We'll try to be careful about the placement of the actual
-  // indexing instructions so that they always follow the definition of the
-  // state pointer, and thus are most likely to dominate all future uses.
+    // It's a register known to this architecture, so go and build a GEP to it
+    // right now. We'll try to be careful about the placement of the actual
+    // indexing instructions so that they always follow the definition of the
+    // state pointer, and thus are most likely to dominate all future uses.
   } else if (auto reg = impl->arch->RegisterByName(reg_name_); reg) {
     llvm::Value *reg_ptr = nullptr;
 
@@ -264,20 +272,20 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
       llvm::IRBuilder<> ir(&target_block, target_block.getFirstInsertionPt());
       reg_ptr = reg->AddressOf(state_ptr, ir);
 
-    // The state pointer is an instruction, likely an `AllocaInst`.
+      // The state pointer is an instruction, likely an `AllocaInst`.
     } else if (auto state_inst = llvm::dyn_cast<llvm::Instruction>(state_ptr);
                state_inst) {
       llvm::IRBuilder<> ir(state_inst);
       reg_ptr = reg->AddressOf(state_ptr, ir);
 
-    // The state pointer is a constant, likely an `llvm::GlobalVariable`.
+      // The state pointer is a constant, likely an `llvm::GlobalVariable`.
     } else if (auto state_const = llvm::dyn_cast<llvm::Constant>(state_ptr);
                state_const) {
       auto &target_block = block->getParent()->getEntryBlock();
       llvm::IRBuilder<> ir(&target_block, target_block.getFirstInsertionPt());
       reg_ptr = reg->AddressOf(state_ptr, ir);
 
-    // Not sure.
+      // Not sure.
     } else {
       LOG(FATAL) << "Unsupported value type for the State pointer: "
                  << LLVMThingToString(state_ptr);
