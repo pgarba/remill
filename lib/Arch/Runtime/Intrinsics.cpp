@@ -29,7 +29,7 @@ extern "C" void __remill_mark_as_used(const void *);
 
 // This is just a hack to make sure all these functions appear in the bitcode
 // file!
-[[gnu::used]] extern "C" void __remill_intrinsics(void) {
+extern "C" void __remill_intrinsics(void) [[gnu::used]]  {
 
   USED(__remill_read_memory_8);
   USED(__remill_read_memory_16);
