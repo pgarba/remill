@@ -62,7 +62,7 @@ void OptimizeModule(const remill::Arch *arch, llvm::Module *module,
   builder.LibraryInfo = TLI;  // Deleted by `llvm::~PassManagerBuilder`.
   builder.DisableUnrollLoops = false;  // Unroll loops!
   IF_LLVM_LT_900(builder.DisableUnitAtATime = false;)
-  builder.RerollLoops = false;
+  //builder.RerollLoops = false;
   builder.SLPVectorize = guide.slp_vectorize;
   builder.LoopVectorize = guide.loop_vectorize;
   IF_LLVM_GTE_360(builder.VerifyInput = guide.verify_input;)
@@ -100,7 +100,7 @@ void OptimizeBareModule(llvm::Module *module, OptimizationGuide guide) {
   builder.LibraryInfo = TLI;  // Deleted by `llvm::~PassManagerBuilder`.
   builder.DisableUnrollLoops = false;  // Unroll loops!
   IF_LLVM_LT_900(builder.DisableUnitAtATime = false;)
-  builder.RerollLoops = false;
+  //builder.RerollLoops = false;
   builder.SLPVectorize = guide.slp_vectorize;
   builder.LoopVectorize = guide.loop_vectorize;
   IF_LLVM_GTE_360(builder.VerifyInput = guide.verify_input;)

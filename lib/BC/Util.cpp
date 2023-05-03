@@ -1281,16 +1281,9 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
           return ret;
 
         } else if (auto uop = llvm::dyn_cast<llvm::UnaryOperator>(ce)) {
-          if (uop->isCast()) {
-            auto ret = llvm::ConstantExpr::getCast(
-                ce->getOpcode(),
-                MoveConstantIntoModule(ce->getOperand(0), dest_module,
-                                       value_map, type_map),
-                RecontextualizeType(ce->getType(), dest_context, type_map));
-            moved_c = ret;
-            return ret;
-
-          } else {
+#if LLVM_VERSION_NUMBER < LLVM_VERSION(16, 0)
+          // In LLVM 16, cast is the only unary constexpr.
+          if (!uop->isCast()) {
             auto ret = llvm::ConstantExpr::get(
                 ce->getOpcode(),
                 MoveConstantIntoModule(ce->getOperand(0), dest_module,
@@ -1298,6 +1291,15 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
             moved_c = ret;
             return ret;
           }
+#endif
+          CHECK(uop->isCast());
+          auto ret = llvm::ConstantExpr::getCast(
+              ce->getOpcode(),
+              MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
+                                     type_map),
+              RecontextualizeType(ce->getType(), dest_context, type_map));
+          moved_c = ret;
+          return ret;
 
         } else if (in_same_context) {
           LOG(ERROR) << "Unsupported CE when moving across module boundaries: "
@@ -1592,18 +1594,14 @@ void CloneFunctionInto(llvm::Function *source_func, llvm::Function *dest_func,
 
   // Make sure that when we're cloning functions that we don't
   // throw away register names and such.
-#if LLVM_VERSION_NUMBER >= LLVM_VERSION(3, 9)
   dest_func->getContext().setDiscardValueNames(false);
-#endif
 
   dest_func->setAttributes(source_func->getAttributes());
   dest_func->setLinkage(source_func->getLinkage());
   dest_func->setVisibility(source_func->getVisibility());
   dest_func->setCallingConv(source_func->getCallingConv());
 
-#if LLVM_VERSION_NUMBER >= LLVM_VERSION(3, 6)
   dest_func->setIsMaterializable(source_func->isMaterializable());
-#endif
 
   // Clone the basic blocks and their instructions.
   std::unordered_map<llvm::BasicBlock *, llvm::BasicBlock *> block_map;
@@ -1616,7 +1614,8 @@ void CloneFunctionInto(llvm::Function *source_func, llvm::Function *dest_func,
     value_map[&old_block] = new_block;
     block_map[&old_block] = new_block;
 
-    auto &new_insts = new_block->getInstList();
+    llvm::IRBuilder new_block_builder(new_block);
+
     for (auto &old_inst : old_block) {
       if (llvm::isa<llvm::DbgInfoIntrinsic>(old_inst)) {
         continue;
@@ -1633,20 +1632,13 @@ void CloneFunctionInto(llvm::Function *source_func, llvm::Function *dest_func,
 
       auto new_inst = old_inst.clone();
 
-      // Resetthe metadata after cloning.
+      // Reset the metadata after cloning.
       for (auto [md_id, val] : mds) {
         old_inst.setMetadata(md_id, val);
       }
 
-      // NOTE(pag): This is pretty evil, there's no reliable way to move the
-      //            type to the destination context, and there are assertions,
-      //            e.g. in `llvm::CallBase::setCalledFunction`, that
-      //            (correctly) detect that the types don't match.
-      new_inst->*REMILL_ACCESS_MEMBER(llvm, Value, VTy) =
-          RecontextualizeType(new_inst->getType(), dest_context, type_map);
+      new_block_builder.Insert(new_inst);
 
-
-      new_insts.push_back(new_inst);
       value_map[&old_inst] = new_inst;
     }
   }
@@ -1937,9 +1929,9 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
             addr, llvm::ConstantInt::get(addr->getType(), i, false));
         llvm::Value *call_args[2] = {mem_ptr, call_arg_addr};
         auto byte = ir.CreateCall(intrinsics.read_memory_8,
-                                  llvm::makeArrayRef(call_args));
+                                  llvm::ArrayRef(call_args));
         auto byte_ptr = ir.CreateInBoundsGEP(i8_array, byte_array,
-                                             llvm::makeArrayRef(gep_indices));
+                                             llvm::ArrayRef(gep_indices));
         ir.CreateStore(byte, byte_ptr);
       }
 
