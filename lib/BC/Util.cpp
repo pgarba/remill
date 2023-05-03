@@ -152,10 +152,10 @@ void InitFunctionAttributes(llvm::Function *function) {
 }
 
 // Create a call from one lifted function to another.
-llvm::CallInst *AddCall(llvm::BasicBlock *source_block,
-                        llvm::Value *dest_func) {
+llvm::CallInst *AddCall(llvm::BasicBlock *source_block, llvm::Value *dest_func,
+                        const IntrinsicTable &intrinsics) {
   llvm::IRBuilder<> ir(source_block);
-  auto args = LiftedFunctionArgs(source_block);
+  auto args = LiftedFunctionArgs(source_block, intrinsics);
 #if LLVM_VERSION_NUMBER < LLVM_VERSION(11, 0)
   return ir.CreateCall(dest_func, args);
 #else
@@ -177,16 +177,18 @@ llvm::CallInst *AddCall(llvm::BasicBlock *source_block,
 
 // Create a tail-call from one lifted function to another.
 llvm::CallInst *AddTerminatingTailCall(llvm::Function *source_func,
-                                       llvm::Value *dest_func) {
+                                       llvm::Value *dest_func,
+                                       const IntrinsicTable &intrinsics) {
   if (source_func->isDeclaration()) {
     llvm::IRBuilder<> ir(
         llvm::BasicBlock::Create(source_func->getContext(), "", source_func));
   }
-  return AddTerminatingTailCall(&(source_func->back()), dest_func);
+  return AddTerminatingTailCall(&(source_func->back()), dest_func, intrinsics);
 }
 
 llvm::CallInst *AddTerminatingTailCall(llvm::BasicBlock *source_block,
-                                       llvm::Value *dest_func) {
+                                       llvm::Value *dest_func,
+                                       const IntrinsicTable &intrinsics) {
   CHECK(nullptr != dest_func) << "Target function/block does not exist!";
 
   LOG_IF(ERROR, source_block->getTerminator())
@@ -196,11 +198,11 @@ llvm::CallInst *AddTerminatingTailCall(llvm::BasicBlock *source_block,
   llvm::IRBuilder<> ir(source_block);
 
   // get the `NEXT_PC` and set it to `PC`
-  auto next_pc = LoadNextProgramCounter(source_block);
+  auto next_pc = LoadNextProgramCounter(source_block, intrinsics);
   auto pc_ref = LoadProgramCounterRef(source_block);
   (void) new llvm::StoreInst(next_pc, pc_ref, source_block);
 
-  auto call_target_instr = AddCall(source_block, dest_func);
+  auto call_target_instr = AddCall(source_block, dest_func, intrinsics);
   call_target_instr->setTailCall(true);
 
   ir.CreateRet(call_target_instr);
@@ -209,38 +211,39 @@ llvm::CallInst *AddTerminatingTailCall(llvm::BasicBlock *source_block,
 
 // Find a local variable defined in the entry block of the function. We use
 // this to find register variables.
-llvm::Value *FindVarInFunction(llvm::BasicBlock *block, std::string_view name,
-                               bool allow_failure) {
+std::pair<llvm::Value *, llvm::Type *>
+FindVarInFunction(llvm::BasicBlock *block, std::string_view name,
+                  bool allow_failure) {
   return FindVarInFunction(block->getParent(), name, allow_failure);
 }
 
 // Find a local variable defined in the entry block of the function. We use
 // this to find register variables.
-llvm::Value *FindVarInFunction(llvm::Function *function, std::string_view name_,
-                               bool allow_failure) {
+std::pair<llvm::Value *, llvm::Type *>
+FindVarInFunction(llvm::Function *function, std::string_view name_,
+                  bool allow_failure) {
   llvm::StringRef name(name_.data(), name_.size());
   if (!function->empty()) {
     for (auto &instr : function->getEntryBlock()) {
       if (instr.getName() == name) {
-        return &instr;
+        if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instr)) {
+          return {alloca, alloca->getAllocatedType()};
+        }
+        if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instr)) {
+          return {gep, gep->getResultElementType()};
+        }
       }
-    }
-  }
-
-  for (auto &arg : function->args()) {
-    if (arg.getName() == name) {
-      return &arg;
     }
   }
 
   auto module = function->getParent();
   if (auto var = module->getGlobalVariable(name)) {
-    return var;
+    return {var, var->getValueType()};
   }
 
   CHECK(allow_failure) << "Could not find variable " << name_ << " in function "
                        << function->getName().str();
-  return nullptr;
+  return {nullptr, nullptr};
 }
 
 // Find the machine state pointer.
@@ -287,33 +290,32 @@ llvm::Value *LoadStatePointer(llvm::BasicBlock *block) {
 }
 
 // Return the current program counter.
-llvm::Value *LoadProgramCounter(llvm::BasicBlock *block) {
+llvm::Value *LoadProgramCounter(llvm::BasicBlock *block,
+                                const IntrinsicTable &intrinsics) {
   llvm::IRBuilder<> ir(block);
-  auto pc_ref = LoadProgramCounterRef(block);
-  return ir.CreateLoad(pc_ref->getType()->getPointerElementType(), pc_ref);
+  return ir.CreateLoad(intrinsics.pc_type, LoadProgramCounterRef(block));
 }
 
 // Return a reference to the current program counter.
 llvm::Value *LoadProgramCounterRef(llvm::BasicBlock *block) {
-  return FindVarInFunction(block->getParent(), kPCVariableName);
+  return FindVarInFunction(block->getParent(), kPCVariableName).first;
 }
 
 // Return a reference to the next program counter.
 llvm::Value *LoadNextProgramCounterRef(llvm::BasicBlock *block) {
-  return FindVarInFunction(block->getParent(), kNextPCVariableName);
+  return FindVarInFunction(block->getParent(), kNextPCVariableName).first;
 }
 
 // Return the next program counter.
-llvm::Value *LoadNextProgramCounter(llvm::BasicBlock *block) {
+llvm::Value *LoadNextProgramCounter(llvm::BasicBlock *block,
+                                    const IntrinsicTable &intrinsics) {
   llvm::IRBuilder<> ir(block);
-  auto block_ref = LoadNextProgramCounterRef(block);
-  return ir.CreateLoad(block_ref->getType()->getPointerElementType(),
-                       block_ref);
+  return ir.CreateLoad(intrinsics.pc_type, LoadNextProgramCounterRef(block));
 }
 
 // Return a reference to the return program counter.
 llvm::Value *LoadReturnProgramCounterRef(llvm::BasicBlock *block) {
-  return FindVarInFunction(block->getParent(), kReturnPCVariableName);
+  return FindVarInFunction(block->getParent(), kReturnPCVariableName).first;
 }
 
 // Update the program counter in the state struct with a new value.
@@ -327,39 +329,39 @@ void StoreNextProgramCounter(llvm::BasicBlock *block, llvm::Value *pc) {
 }
 
 // Update the program counter in the state struct with a hard-coded value.
-void StoreProgramCounter(llvm::BasicBlock *block, uint64_t pc) {
+void StoreProgramCounter(llvm::BasicBlock *block, uint64_t pc,
+                         const IntrinsicTable &intrinsics) {
   auto pc_ptr = LoadProgramCounterRef(block);
-  auto type = llvm::dyn_cast<llvm::PointerType>(pc_ptr->getType());
-  (void) new llvm::StoreInst(llvm::ConstantInt::get(type->getElementType(), pc),
+  (void) new llvm::StoreInst(llvm::ConstantInt::get(intrinsics.pc_type, pc),
                              pc_ptr, block);
 }
 
 // Return the current memory pointer.
-llvm::Value *LoadMemoryPointer(llvm::BasicBlock *block) {
+llvm::Value *LoadMemoryPointer(llvm::BasicBlock *block,
+                               const IntrinsicTable &intrinsics) {
   llvm::IRBuilder<> ir(block);
-  auto block_ref = LoadMemoryPointerRef(block);
-  return ir.CreateLoad(block_ref->getType()->getPointerElementType(),
-                       block_ref);
+  return ir.CreateLoad(intrinsics.mem_ptr_type, LoadMemoryPointerRef(block));
 }
 
 // Return an `llvm::Value *` that is an `i1` (bool type) representing whether
 // or not a conditional branch is taken.
 llvm::Value *LoadBranchTaken(llvm::BasicBlock *block) {
   llvm::IRBuilder<> ir(block);
-  auto var = FindVarInFunction(block->getParent(), kBranchTakenVariableName);
-  auto cond = ir.CreateLoad(var->getType()->getPointerElementType(), var);
+  auto i8_type = llvm::Type::getInt8Ty(block->getContext());
+  auto cond = ir.CreateLoad(
+      i8_type, FindVarInFunction(block->getParent(), kBranchTakenVariableName).first);
   auto true_val = llvm::ConstantInt::get(cond->getType(), 1);
   return ir.CreateICmpEQ(cond, true_val);
 }
 
 // Return a reference to the branch taken
 llvm::Value *LoadBranchTakenRef(llvm::BasicBlock *block) {
-  return FindVarInFunction(block->getParent(), kBranchTakenVariableName);
+  return FindVarInFunction(block->getParent(), kBranchTakenVariableName).first;
 }
 
 // Return a reference to the memory pointer.
 llvm::Value *LoadMemoryPointerRef(llvm::BasicBlock *block) {
-  return FindVarInFunction(block->getParent(), kMemoryVariableName);
+  return FindVarInFunction(block->getParent(), kMemoryVariableName).first;
 }
 
 // Find a function with name `name` in the module `M`.
@@ -379,8 +381,8 @@ llvm::GlobalVariable *FindGlobaVariable(llvm::Module *module,
 // code that we want to lift.
 std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch) {
   auto arch_name = GetArchName(arch->arch_name);
-  auto path = FindSemanticsBitcodeFile(arch_name);
-  LOG(INFO) << "Loading " << arch_name << " semantics from file " << path;
+  std::string path = FindSemanticsBitcodeFile(arch_name);
+  llvm::outs() << "Loading " << arch_name << " semantics from file " << path;
   auto module = LoadModuleFromFile(arch->context, path);
   arch->PrepareModule(module);
   arch->InitFromSemanticsModule(module.get());
@@ -404,30 +406,26 @@ bool VerifyModule(llvm::Module *module) {
 }
 
 // Reads an LLVM module from a file.
-std::unique_ptr<llvm::Module> LoadModuleFromFile(llvm::LLVMContext *context,
-                                                 std::string_view file_name_,
-                                                 bool allow_failure) {
+std::unique_ptr<llvm::Module>
+LoadModuleFromFile(llvm::LLVMContext *context,
+                   std::filesystem::path file_name) {
   llvm::SMDiagnostic err;
-  llvm::StringRef file_name(file_name_.data(), file_name_.size());
-  auto module = llvm::parseIRFile(file_name, err, *context);
+  auto module = llvm::parseIRFile(file_name.string(), err, *context);
 
   if (!module) {
-    LOG_IF(FATAL, !allow_failure)
-        << "Unable to parse module file " << file_name_ << ": "
-        << err.getMessage().str();
+    llvm::outs() << "Unable to parse module file " << file_name << ": "
+               << err.getMessage().str();
     return {};
   }
 
   auto ec = module->materializeAll();  // Just in case.
   if (ec) {
-    LOG_IF(FATAL, !allow_failure)
-        << "Unable to materialize everything from " << file_name_;
+    LOG(ERROR) << "Unable to materialize everything from " << file_name;
     return {};
   }
 
   if (!VerifyModule(module.get())) {
-    LOG_IF(FATAL, !allow_failure)
-        << "Error verifying module read from file " << file_name_;
+    LOG(ERROR) << "Error verifying module read from file " << file_name;
     return {};
   }
 
@@ -642,16 +640,16 @@ llvm::Argument *NthArgument(llvm::Function *func, size_t index) {
 // Return a vector of arguments to pass to a lifted function, where the
 // arguments are derived from `block`.
 std::array<llvm::Value *, kNumBlockArgs>
-LiftedFunctionArgs(llvm::BasicBlock *block) {
+LiftedFunctionArgs(llvm::BasicBlock *block, const IntrinsicTable &intrinsics) {
   auto func = block->getParent();
 
   // Set up arguments according to our ABI.
   std::array<llvm::Value *, kNumBlockArgs> args;
 
-  if (FindVarInFunction(func, kPCVariableName, true)) {
-    args[kMemoryPointerArgNum] = LoadMemoryPointer(block);
+  if (FindVarInFunction(func, kPCVariableName, true).first) {
+    args[kMemoryPointerArgNum] = LoadMemoryPointer(block, intrinsics);
     args[kStatePointerArgNum] = LoadStatePointer(block);
-    args[kPCArgNum] = LoadProgramCounter(block);
+    args[kPCArgNum] = LoadProgramCounter(block, intrinsics);
   } else {
     args[kMemoryPointerArgNum] = NthArgument(func, kMemoryPointerArgNum);
     args[kStatePointerArgNum] = NthArgument(func, kStatePointerArgNum);
@@ -904,10 +902,7 @@ static llvm::Type *RecontextualizeType(llvm::Type *type,
 
     case llvm::Type::PointerTyID: {
       auto ptr_type = llvm::dyn_cast<llvm::PointerType>(type);
-      auto elem_type = ptr_type->getElementType();
-      cached =
-          llvm::PointerType::get(RecontextualizeType(elem_type, context, cache),
-                                 ptr_type->getAddressSpace());
+      cached = llvm::PointerType::get(context, ptr_type->getAddressSpace());
       break;
     }
 
@@ -1224,46 +1219,6 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
         moved_c = ret;
         return ret;
       }
-      case llvm::Instruction::UDiv: {
-        const auto b = llvm::dyn_cast<llvm::UDivOperator>(ce);
-        auto ret = llvm::ConstantExpr::getUDiv(
-            MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
-                                   type_map),
-            MoveConstantIntoModule(ce->getOperand(1), dest_module, value_map,
-                                   type_map),
-            b->isExact());
-        moved_c = ret;
-        return ret;
-      }
-      case llvm::Instruction::SDiv: {
-        const auto b = llvm::dyn_cast<llvm::SDivOperator>(ce);
-        auto ret = llvm::ConstantExpr::getSDiv(
-            MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
-                                   type_map),
-            MoveConstantIntoModule(ce->getOperand(1), dest_module, value_map,
-                                   type_map),
-            b->isExact());
-        moved_c = ret;
-        return ret;
-      }
-      case llvm::Instruction::URem: {
-        auto ret = llvm::ConstantExpr::getURem(
-            MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
-                                   type_map),
-            MoveConstantIntoModule(ce->getOperand(1), dest_module, value_map,
-                                   type_map));
-        moved_c = ret;
-        return ret;
-      }
-      case llvm::Instruction::SRem: {
-        auto ret = llvm::ConstantExpr::getSRem(
-            MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
-                                   type_map),
-            MoveConstantIntoModule(ce->getOperand(1), dest_module, value_map,
-                                   type_map));
-        moved_c = ret;
-        return ret;
-      }
       case llvm::Instruction::IntToPtr: {
         auto ret = llvm::ConstantExpr::getIntToPtr(
             MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
@@ -1432,12 +1387,12 @@ DeclareVarInModule(llvm::GlobalVariable *var, llvm::Module *dest_module,
   }
 
   auto &dest_context = dest_module->getContext();
-  const auto type = ::remill::RecontextualizeType(
-      var->getType()->getElementType(), dest_context);
+  const auto type =
+      ::remill::RecontextualizeType(var->getValueType(), dest_context);
 
   auto dest_var = dest_module->getGlobalVariable(var->getName());
   if (dest_var) {
-    CHECK_EQ(type, dest_var->getType()->getElementType());
+    CHECK_EQ(type, dest_var->getValueType());
     moved_var = dest_var;
     return dest_var;
   }
@@ -1486,7 +1441,7 @@ DeclareAliasInModule(llvm::GlobalAlias *var, llvm::Module *dest_module,
     }
   }
 
-  const auto elem_type = dest_type->getElementType();
+  const auto elem_type = var->getValueType();
   const auto dest_var = llvm::GlobalAlias::create(
       elem_type, var->getType()->getAddressSpace(), var->getLinkage(),
       var->getName(), nullptr, dest_module);
@@ -1550,8 +1505,6 @@ static void MoveInstructionIntoModule(llvm::Instruction *inst,
       auto dest_func_type =
           llvm::dyn_cast<llvm::FunctionType>(RecontextualizeType(
               call->getFunctionType(), dest_module->getContext(), type_map));
-      CHECK_EQ(new_callee_val->getType()->getPointerElementType(),
-               dest_func_type);
       llvm::FunctionCallee callee(dest_func_type, new_callee_val);
       call->setCalledFunction(callee);
     }
@@ -1947,7 +1900,7 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
       auto res = ir.CreateAlloca(type);
       llvm::Value *args_3[3] = {args_2[0], args_2[1], res};
       ir.CreateCall(intrinsics.read_memory_f80, args_3);
-      return ir.CreateLoad(res->getType()->getPointerElementType(), res);
+      return ir.CreateLoad(type, res);
     }
 
     case llvm::Type::X86_MMXTyID:
@@ -1990,7 +1943,7 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
         ir.CreateStore(byte, byte_ptr);
       }
 
-      return ir.CreateLoad(res->getType()->getPointerElementType(), res);
+      return ir.CreateLoad(type, res);
     }
 
     // Building up a structure requires us to start with an undef value,
@@ -2154,6 +2107,7 @@ llvm::Value *StoreToMemory(const IntrinsicTable &intrinsics,
       auto res = ir.CreateAlloca(type);
       ir.CreateStore(val_to_store, res);
 
+      auto i8 = llvm::Type::getInt8Ty(context);
       auto i8_array =
           llvm::ArrayType::get(llvm::Type::getInt8Ty(context), size);
       auto byte_array =
@@ -2167,8 +2121,7 @@ llvm::Value *StoreToMemory(const IntrinsicTable &intrinsics,
             addr, llvm::ConstantInt::get(addr->getType(), i, false));
         gep_indices[1] = llvm::ConstantInt::get(index_type, i, false);
         auto byte_ptr = ir.CreateInBoundsGEP(i8_array, byte_array, gep_indices);
-        args_3[2] = ir.CreateLoad(byte_ptr->getType()->getPointerElementType(),
-                                  byte_ptr);
+        args_3[2] = ir.CreateLoad(i8, byte_ptr);
         args_3[0] = ir.CreateCall(intrinsics.write_memory_8, args_3);
       }
 
@@ -2359,30 +2312,18 @@ BuildIndexes(const llvm::DataLayout &dl, llvm::Type *type, size_t offset,
 // and to give access to a module for data layouts.
 llvm::Value *BuildPointerToOffset(llvm::IRBuilder<> &ir, llvm::Value *ptr,
                                   size_t dest_elem_offset,
-                                  llvm::Type *dest_ptr_type_) {
+                                  llvm::Type *dest_ptr_type) {
 
-  const auto block = ir.GetInsertBlock();
-  llvm::Module *module = nullptr;
-  if (block) {
-    module = block->getModule();
-  } else if (auto gv = llvm::dyn_cast<llvm::GlobalValue>(ptr); gv) {
-    module = gv->getParent();
-
-    // TODO(pag): Improve the API to take a `DataLayout`, perhaps.
-  } else {
-    LOG(FATAL) << "Unable to get the current module.";
-  }
-
+  // TODO(pag): Improve the API to take a `DataLayout`, perhaps.
   auto &context = ptr->getContext();
   const auto i32_type = llvm::Type::getInt32Ty(context);
 
-  const auto &dl = module->getDataLayout();
   llvm::SmallVector<llvm::Value *, 16> indexes;
 
   auto ptr_type = llvm::dyn_cast<llvm::PointerType>(ptr->getType());
   CHECK_NOTNULL(ptr_type);
   const auto dest_elem_ptr_type =
-      llvm::dyn_cast<llvm::PointerType>(dest_ptr_type_);
+      llvm::dyn_cast<llvm::PointerType>(dest_ptr_type);
   CHECK_NOTNULL(dest_elem_ptr_type);
   auto ptr_addr_space = ptr_type->getAddressSpace();
   const auto dest_ptr_addr_space = dest_elem_ptr_type->getAddressSpace();
@@ -2390,8 +2331,7 @@ llvm::Value *BuildPointerToOffset(llvm::IRBuilder<> &ir, llvm::Value *ptr,
 
   // Change address spaces if necessary before indexing.
   if (dest_ptr_addr_space != ptr_addr_space) {
-    ptr_type = llvm::PointerType::get(ptr_type->getPointerElementType(),
-                                      dest_ptr_addr_space);
+    ptr_type = llvm::PointerType::get(context, dest_ptr_addr_space);
     ptr_addr_space = dest_ptr_addr_space;
 
     if (constant_ptr) {
@@ -2403,72 +2343,17 @@ llvm::Value *BuildPointerToOffset(llvm::IRBuilder<> &ir, llvm::Value *ptr,
     }
   }
 
-  const auto dest_elem_type = dest_elem_ptr_type->getElementType();
-  const auto ptr_elem_type = ptr_type->getElementType();
-  const auto ptr_elem_size = dl.getTypeAllocSize(ptr_elem_type);
-  const auto base_index = dest_elem_offset / ptr_elem_size;
+  const auto i8_type = llvm::Type::getInt8Ty(context);
 
-  indexes.push_back(llvm::ConstantInt::get(i32_type, base_index, false));
-
-  dest_elem_offset = dest_elem_offset % ptr_elem_size;
-
-  auto [reached_disp, indexed_type] =
-      BuildIndexes(dl, ptr_elem_type, 0, dest_elem_offset, indexes);
-
-  if (reached_disp) {
+  if (dest_elem_offset) {
+    indexes.push_back(
+        llvm::ConstantInt::get(i32_type, dest_elem_offset, false));
     if (constant_ptr) {
-      if (base_index) {
-        constant_ptr = llvm::ConstantExpr::getGetElementPtr(
-            ptr_elem_type, constant_ptr, indexes);
-      } else {
-        constant_ptr = llvm::ConstantExpr::getGetElementPtr(
-            ptr_elem_type, constant_ptr, indexes, true,
-            (base_index * ptr_elem_size) + reached_disp);
-      }
+      constant_ptr =
+          llvm::ConstantExpr::getGetElementPtr(i8_type, constant_ptr, indexes);
       ptr = constant_ptr;
     } else {
-      if (base_index) {
-        ptr = ir.CreateGEP(ptr_elem_type, ptr, indexes);
-      } else {
-        ptr = ir.CreateInBoundsGEP(ptr_elem_type, ptr, indexes);
-      }
-    }
-  }
-
-  if (const auto diff = dest_elem_offset - reached_disp; diff) {
-    DCHECK_LE(diff, dest_elem_offset);
-    const auto i8_type = llvm::Type::getInt8Ty(context);
-    const auto i8_ptr_type =
-        llvm::PointerType::getInt8PtrTy(context, ptr_addr_space);
-
-    const auto dest_elem_size = dl.getTypeAllocSize(dest_elem_type);
-    if (diff % dest_elem_size) {
-      if (constant_ptr) {
-        constant_ptr =
-            llvm::ConstantExpr::getBitCast(constant_ptr, i8_ptr_type);
-        constant_ptr = llvm::ConstantExpr::getGetElementPtr(
-            i8_type, constant_ptr, llvm::ConstantInt::get(i32_type, diff));
-        return llvm::ConstantExpr::getBitCast(constant_ptr, dest_elem_ptr_type);
-
-      } else {
-        ptr = ir.CreateBitCast(ptr, i8_ptr_type);
-        ptr = ir.CreateGEP(i8_type, ptr,
-                           llvm::ConstantInt::get(i32_type, diff, false));
-        return ir.CreateBitCast(ptr, dest_elem_ptr_type);
-      }
-    } else {
-      if (constant_ptr) {
-        constant_ptr =
-            llvm::ConstantExpr::getBitCast(constant_ptr, dest_elem_ptr_type);
-        return llvm::ConstantExpr::getGetElementPtr(
-            dest_elem_type, constant_ptr,
-            llvm::ConstantInt::get(i32_type, diff / dest_elem_size));
-      } else {
-        ptr = ir.CreateBitCast(ptr, dest_elem_ptr_type);
-        return ir.CreateGEP(
-            dest_elem_type, ptr,
-            llvm::ConstantInt::get(i32_type, diff / dest_elem_size, false));
-      }
+      ptr = ir.CreateGEP(i8_type, ptr, indexes);
     }
   }
 

@@ -31,6 +31,7 @@ class IntegerType;
 class BasicBlock;
 class Value;
 class CallInst;
+class Type;
 }  // namespace llvm
 
 namespace remill {
@@ -56,6 +57,8 @@ enum LiftStatus {
 // is called with the appropriate arguments.
 class InstructionLifter {
  public:
+  using LifterPtr = std::unique_ptr<InstructionLifter>;
+
   virtual ~InstructionLifter(void);
 
   inline InstructionLifter(const std::unique_ptr<const Arch> &arch_,
@@ -79,8 +82,9 @@ class InstructionLifter {
                            bool is_delayed = false, llvm::CallInst **CIInstruction=nullptr);
 
   // Load the address of a register.
-  llvm::Value *LoadRegAddress(llvm::BasicBlock *block, llvm::Value *state_ptr,
-                              std::string_view reg_name) const;
+  std::pair<llvm::Value *, llvm::Type *>
+  LoadRegAddress(llvm::BasicBlock *block, llvm::Value *state_ptr,
+                 std::string_view reg_name) const;
 
   // Load the value of a register.
   llvm::Value *LoadRegValue(llvm::BasicBlock *block, llvm::Value *state_ptr,

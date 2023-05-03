@@ -61,14 +61,18 @@ class InstructionLifter::Impl {
   // Architecture being used for lifting.
   const Arch *const arch;
 
-  // Machine word type for this architecture.
-  llvm::IntegerType *const word_type;
-
   // Set of intrinsics.
   const IntrinsicTable *const intrinsics;
 
+  // Machine word type for this architecture.
+  llvm::Type *const word_type;
+
+  // Type of the memory pointer.
+  llvm::Type *const memory_ptr_type;
+
   // Cache of looked up registers inside of `last_func`.
-  std::unordered_map<std::string, llvm::Value *> reg_ptr_cache;
+  std::unordered_map<std::string, std::pair<llvm::Value *, llvm::Type *>>
+      reg_ptr_cache;
 
   // The function into which we're lifting. If This gets out of date, we
   // clear out `reg_ptr_cache`.

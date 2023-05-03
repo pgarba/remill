@@ -341,7 +341,7 @@ int main(int argc, char *argv[]) {
       arg_types.push_back(llvm::PointerType::get(reg->type, 0));
     }
 
-    const auto state_type = state_ptr_type->getPointerElementType();
+    const auto state_type = llvm::PointerType::get(context, 0);
     const auto func_type =
         llvm::FunctionType::get(mem_ptr_type, arg_types, false);
     const auto func = llvm::Function::Create(
@@ -403,9 +403,7 @@ int main(int argc, char *argv[]) {
 
       auto reg_ptr = reg->AddressOf(state_ptr, entry);
       ir.SetInsertPoint(entry);
-      ir.CreateStore(
-          ir.CreateLoad(reg_ptr->getType()->getPointerElementType(), reg_ptr),
-          &arg);
+      ir.CreateStore(ir.CreateLoad(reg->type, reg_ptr), &arg);
     }
 
     // Return the memory pointer, so that all memory accesses are

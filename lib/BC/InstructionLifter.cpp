@@ -46,9 +46,13 @@ llvm::Function *GetInstructionFunction(llvm::Module *module,
 InstructionLifter::Impl::Impl(const Arch *arch_,
                               const IntrinsicTable *intrinsics_)
     : arch(arch_),
-      word_type(llvm::Type::getIntNTy(
-          intrinsics_->async_hyper_call->getContext(), arch->address_size)),
       intrinsics(intrinsics_),
+      word_type(
+          remill::NthArgument(intrinsics->async_hyper_call, remill::kPCArgNum)
+              ->getType()),
+      memory_ptr_type(remill::NthArgument(intrinsics->async_hyper_call,
+                                          remill::kMemoryPointerArgNum)
+                          ->getType()),
       module(intrinsics->async_hyper_call->getParent()),
       invalid_instruction(
           GetInstructionFunction(module, kInvalidInstructionISelName)),
@@ -116,13 +120,13 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   }
 
   llvm::IRBuilder<> ir(block);
-  const auto mem_ptr_ref =
+  const auto [mem_ptr_ref, mem_ptr_ref_type] =
       LoadRegAddress(block, state_ptr, kMemoryVariableName);
-  const auto pc_ref = LoadRegAddress(block, state_ptr, kPCVariableName);
-  const auto next_pc_ref =
+  const auto [pc_ref, pc_ref_type] =
+      LoadRegAddress(block, state_ptr, kPCVariableName);
+  const auto [next_pc_ref, next_pc_ref_type] =
       LoadRegAddress(block, state_ptr, kNextPCVariableName);
-  const auto next_pc = ir.CreateLoad(
-      next_pc_ref->getType()->getPointerElementType(), next_pc_ref);
+  const auto next_pc = ir.CreateLoad(impl->word_type, next_pc_ref);
 
   // If this instruction appears within a delay slot, then we're going to assume
   // that the prior instruction updated `PC` to the target of the CTI, and that
@@ -132,8 +136,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   // TODO(pag): An alternate approach may be to call some kind of `DELAY_SLOT`
   //            semantics function.
   if (is_delayed) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(
-        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
+    llvm::Value *temp_args[] = {
+        ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->delay_slot_begin, temp_args),
                    mem_ptr_ref);
 
@@ -153,8 +157,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
 
   // Begin an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(
-        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
+    llvm::Value *temp_args[] = {
+        ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->atomic_begin, temp_args),
                    mem_ptr_ref);
   }
@@ -190,8 +194,7 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   }
 
   // Pass in current value of the memory pointer.
-  args[0] = ir.CreateLoad(mem_ptr_ref->getType()->getPointerElementType(),
-                          mem_ptr_ref);
+  args[0] = ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref);
 
   // Call the function that implements the instruction semantics.
   auto CI = ir.CreateCall(isel_func, args);
@@ -202,8 +205,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
 
   // End an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {
-    llvm::Value *temp_args[] = {ir.CreateLoad(
-        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
+    llvm::Value *temp_args[] = {
+        ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->atomic_end, temp_args),
                    mem_ptr_ref);
   }
@@ -220,8 +223,8 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
     // are lifted, we do the `PC = NEXT_PC + size`, so this is fine.
     ir.CreateStore(next_pc, next_pc_ref);
 
-    llvm::Value *temp_args[] = {ir.CreateLoad(
-        mem_ptr_ref->getType()->getPointerElementType(), mem_ptr_ref)};
+    llvm::Value *temp_args[] = {
+        ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref)};
     ir.CreateStore(ir.CreateCall(impl->intrinsics->delay_slot_end, temp_args),
                    mem_ptr_ref);
   }
@@ -230,11 +233,12 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
 }
 
 // Load the address of a register.
-llvm::Value *
+std::pair<llvm::Value *, llvm::Type *>
 InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
                                   llvm::Value *state_ptr,
                                   std::string_view reg_name_) const {
   const auto func = block->getParent();
+  const auto module = func->getParent();
 
   // Invalidate the cache.
   if (func != impl->last_func) {
@@ -245,24 +249,27 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
   }
 
   std::string reg_name(reg_name_.data(), reg_name_.size());
-  auto [reg_ptr_it, added] =
-      impl->reg_ptr_cache.emplace(std::move(reg_name), nullptr);
+  auto [reg_ptr_it, added] = impl->reg_ptr_cache.emplace(
+      std::move(reg_name),
+      std::pair<llvm::Value *, llvm::Type *>{nullptr, nullptr});
 
-  if (reg_ptr_it->second) {
+  if (reg_ptr_it->second.first) {
     (void) added;
     return reg_ptr_it->second;
+  }
 
-    // It's already a variable in the function.
-  } else if (const auto var_ptr = FindVarInFunction(func, reg_name_, true);
-             var_ptr) {
-    reg_ptr_it->second = var_ptr;
-    return var_ptr;
+  // It's already a variable in the function.
+  const auto [var_ptr, var_ptr_type] = FindVarInFunction(func, reg_name_, true);
+  if (var_ptr) {
+    reg_ptr_it->second = {var_ptr, var_ptr_type};
+    return reg_ptr_it->second;
+  }
 
-    // It's a register known to this architecture, so go and build a GEP to it
-    // right now. We'll try to be careful about the placement of the actual
-    // indexing instructions so that they always follow the definition of the
-    // state pointer, and thus are most likely to dominate all future uses.
-  } else if (auto reg = impl->arch->RegisterByName(reg_name_); reg) {
+  // It's a register known to this architecture, so go and build a GEP to it
+  // right now. We'll try to be careful about the placement of the actual
+  // indexing instructions so that they always follow the definition of the
+  // state pointer, and thus are most likely to dominate all future uses.
+  if (auto reg = impl->arch->RegisterByName(reg_name_)) {
     llvm::Value *reg_ptr = nullptr;
 
     // The state pointer is an argument.
@@ -291,13 +298,33 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
                  << LLVMThingToString(state_ptr);
     }
 
-    reg_ptr_it->second = reg_ptr;
-    return reg_ptr;
-
-  } else {
-    LOG(FATAL) << "Could not locate variable or register " << reg_name_;
-    return nullptr;
+    reg_ptr_it->second = {reg_ptr, reg->type};
+    return reg_ptr_it->second;
   }
+
+  // Try to find it as a global variable.
+  if (auto gvar = module->getGlobalVariable(reg_name)) {
+    return {gvar, gvar->getValueType()};
+  }
+
+  // Invent a fake one and keep going.
+  std::stringstream unk_var;
+  unk_var << "__remill_unknown_register_" << reg_name;
+  auto unk_var_name = unk_var.str();
+  if (auto var = module->getGlobalVariable(unk_var_name)) {
+    return {var, var->getValueType()};
+  }
+
+  // TODO(pag): Eventually refactor into a higher-level issue, perhaps a
+  //            a hyper call to read an unknown register, or a lifting failure,
+  //            with a more elaborate status value returned.
+  LOG(ERROR) << "Could not locate variable or register " << reg_name_;
+
+  return {new llvm::GlobalVariable(*module, impl->word_type, false,
+                                   llvm::GlobalValue::ExternalLinkage,
+                                   llvm::UndefValue::get(impl->word_type),
+                                   unk_var_name),
+          impl->word_type};
 }
 
 // Clear out the cache of the current register values/addresses loaded.
@@ -310,9 +337,8 @@ void InstructionLifter::ClearCache(void) const {
 llvm::Value *InstructionLifter::LoadRegValue(llvm::BasicBlock *block,
                                              llvm::Value *state_ptr,
                                              std::string_view reg_name) const {
-  auto ptr = LoadRegAddress(block, state_ptr, reg_name);
+  auto [ptr, ptr_ty] = LoadRegAddress(block, state_ptr, reg_name);
   CHECK_NOTNULL(ptr);
-  auto ptr_ty = ptr->getType()->getPointerElementType();
   return new llvm::LoadInst(ptr_ty, ptr, llvm::Twine::createNull(), block);
 }
 
@@ -545,7 +571,7 @@ llvm::Value *InstructionLifter::LiftRegisterOperand(Instruction &inst,
   auto arg_type = IntendedArgumentType(arg);
 
   if (llvm::isa<llvm::PointerType>(arg_type)) {
-    auto val = LoadRegAddress(block, state_ptr, arch_reg.name);
+    auto [val, val_type] = LoadRegAddress(block, state_ptr, arch_reg.name);
     return ConvertToIntendedType(inst, op, block, val, real_arg_type);
 
   } else {
@@ -757,7 +783,7 @@ llvm::Value *InstructionLifter::LiftExpressionOperandRec(
     if (!arg || !llvm::isa<llvm::PointerType>(arg->getType())) {
       return LoadRegValue(block, state_ptr, (*reg_op)->name);
     } else {
-      return LoadRegAddress(block, state_ptr, (*reg_op)->name);
+      return LoadRegAddress(block, state_ptr, (*reg_op)->name).first;
     }
 
   } else if (auto ci_op = std::get_if<llvm::Constant *>(op)) {
@@ -767,7 +793,7 @@ llvm::Value *InstructionLifter::LiftExpressionOperandRec(
     if (!arg || !llvm::isa<llvm::PointerType>(arg->getType())) {
       return LoadRegValue(block, state_ptr, *str_op);
     } else {
-      return LoadRegAddress(block, state_ptr, *str_op);
+      return LoadRegAddress(block, state_ptr, *str_op).first;
     }
   } else {
     LOG(FATAL) << "Uninitialized Operand Expression";
@@ -782,7 +808,7 @@ llvm::Value *InstructionLifter::LiftAddressOperand(Instruction &inst,
                                                    llvm::Argument *,
                                                    Operand &op) {
   auto &arch_addr = op.addr;
-  const auto word_type = impl->word_type;
+  const auto word_type = llvm::dyn_cast<llvm::IntegerType>(impl->word_type);
   const auto zero = llvm::ConstantInt::get(word_type, 0, false);
   const auto word_size = impl->arch->address_size;
 

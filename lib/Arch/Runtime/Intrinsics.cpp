@@ -27,9 +27,15 @@
 //        addresses taken, and so this prevents dead argument elimination.
 extern "C" void __remill_mark_as_used(const void *);
 
+// Each architecture's semantics module defines this variable
+// See https://github.com/lifting-bits/remill/pull/631#issuecomment-1279989004
+extern State __remill_state;
+
 // This is just a hack to make sure all these functions appear in the bitcode
 // file!
 extern "C" void __remill_intrinsics(void) [[gnu::used]]  {
+
+  USED(__remill_state);
 
   USED(__remill_read_memory_8);
   USED(__remill_read_memory_16);

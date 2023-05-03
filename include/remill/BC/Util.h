@@ -31,14 +31,15 @@
 
 // clang-format on
 
+#include <remill/BC/ABI.h>
+
 #include <array>
 #include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <remill/BC/ABI.h>
+#include <filesystem>
 
 namespace llvm {
 class Argument;
@@ -67,24 +68,29 @@ class IntrinsicTable;
 void InitFunctionAttributes(llvm::Function *F);
 
 // Create a call from one lifted function to another.
-llvm::CallInst *AddCall(llvm::BasicBlock *source_block, llvm::Value *dest_func);
+llvm::CallInst *AddCall(llvm::BasicBlock *source_block, llvm::Value *dest_func,
+                        const IntrinsicTable &intrinsics);
 
 // Create a tail-call from one lifted function to another.
 llvm::CallInst *AddTerminatingTailCall(llvm::Function *source_func,
-                                       llvm::Value *dest_func);
+                                       llvm::Value *dest_func,
+                                       const IntrinsicTable &intrinsics);
 
 llvm::CallInst *AddTerminatingTailCall(llvm::BasicBlock *source_block,
-                                       llvm::Value *dest_func);
+                                       llvm::Value *dest_func,
+                                       const IntrinsicTable &intrinsics);
 
 // Find a local variable defined in the entry block of the function. We use
 // this to find register variables.
-llvm::Value *FindVarInFunction(llvm::BasicBlock *block, std::string_view name,
-                               bool allow_failure = false);
+std::pair<llvm::Value *, llvm::Type *>
+FindVarInFunction(llvm::BasicBlock *block, std::string_view name,
+                  bool allow_failure = false);
 
 // Find a local variable defined in the entry block of the function. We use
 // this to find register variables.
-llvm::Value *FindVarInFunction(llvm::Function *func, std::string_view name,
-                               bool allow_failure = false);
+std::pair<llvm::Value *, llvm::Type *>
+FindVarInFunction(llvm::Function *func, std::string_view name,
+                  bool allow_failure = false);
 
 // Find the machine state pointer. The machine state pointer is, by convention,
 // passed as the first argument to every lifted function.
@@ -92,10 +98,12 @@ llvm::Value *LoadStatePointer(llvm::Function *function);
 llvm::Value *LoadStatePointer(llvm::BasicBlock *block);
 
 // Return the current program counter.
-llvm::Value *LoadProgramCounter(llvm::BasicBlock *block);
+llvm::Value *LoadProgramCounter(llvm::BasicBlock *block,
+                                const IntrinsicTable &intrinsics);
 
 // Return the next program counter.
-llvm::Value *LoadNextProgramCounter(llvm::BasicBlock *block);
+llvm::Value *LoadNextProgramCounter(llvm::BasicBlock *block,
+                                    const IntrinsicTable &intrinsics);
 
 // Return a reference to the current program counter.
 llvm::Value *LoadProgramCounterRef(llvm::BasicBlock *block);
@@ -107,7 +115,8 @@ llvm::Value *LoadNextProgramCounterRef(llvm::BasicBlock *block);
 llvm::Value *LoadReturnProgramCounterRef(llvm::BasicBlock *block);
 
 // Update the program counter in the state struct with a hard-coded value.
-void StoreProgramCounter(llvm::BasicBlock *block, uint64_t pc);
+void StoreProgramCounter(llvm::BasicBlock *block, uint64_t pc,
+                         const IntrinsicTable &intrinsics);
 
 // Update the program counter in the state struct with a new value.
 void StoreProgramCounter(llvm::BasicBlock *block, llvm::Value *pc);
@@ -122,7 +131,8 @@ llvm::Value *LoadMemoryPointerArg(llvm::Function *func);
 llvm::Value *LoadProgramCounterArg(llvm::Function *function);
 
 // Return the current memory pointer.
-llvm::Value *LoadMemoryPointer(llvm::BasicBlock *block);
+llvm::Value *LoadMemoryPointer(llvm::BasicBlock *block,
+                               const IntrinsicTable &intrinsics);
 
 // Return a reference to the memory pointer.
 llvm::Value *LoadMemoryPointerRef(llvm::BasicBlock *block);
@@ -143,9 +153,8 @@ llvm::GlobalVariable *FindGlobaVariable(llvm::Module *M, std::string_view name);
 bool VerifyModule(llvm::Module *module);
 
 // Parses and loads a bitcode file into memory.
-std::unique_ptr<llvm::Module> LoadModuleFromFile(llvm::LLVMContext *context,
-                                                 std::string_view file_name,
-                                                 bool allow_failure = false);
+std::unique_ptr<llvm::Module>
+LoadModuleFromFile(llvm::LLVMContext *context, std::filesystem::path file_name);
 
 // Loads the semantics for the `arch`-specific machine, i.e. the machine of the
 // code that we want to lift.
@@ -180,7 +189,7 @@ llvm::Argument *NthArgument(llvm::Function *func, size_t index);
 // Return a vector of arguments to pass to a lifted function, where the
 // arguments are derived from `block`.
 std::array<llvm::Value *, kNumBlockArgs>
-LiftedFunctionArgs(llvm::BasicBlock *block);
+LiftedFunctionArgs(llvm::BasicBlock *block, const IntrinsicTable &intrinsics);
 
 // Serialize an LLVM object into a string.
 std::string LLVMThingToString(llvm::Value *thing);

@@ -127,6 +127,7 @@ class TraceLifter::Impl {
   const Arch *const arch;
   InstructionLifter &inst_lifter;
   const remill::IntrinsicTable *intrinsics;
+  llvm::Type *word_type;
   llvm::LLVMContext &context;
   llvm::Module *const module;
   const uint64_t addr_mask;
@@ -148,6 +149,7 @@ TraceLifter::Impl::Impl(InstructionLifter *inst_lifter_, TraceManager *manager_)
     : arch(inst_lifter_->impl->arch),
       inst_lifter(*inst_lifter_),
       intrinsics(inst_lifter.impl->intrinsics),
+      word_type(arch->AddressType()),
       context(inst_lifter.impl->word_type->getContext()),
       module(intrinsics->async_hyper_call->getParent()),
       addr_mask(arch->address_size >= 64 ? ~0ULL
@@ -297,8 +299,8 @@ bool TraceLifter::Impl::Lift(
 
     if (auto entry_block = &(func->front())) {
       auto pc = LoadProgramCounterArg(func);
-      auto next_pc_ref = inst_lifter.LoadRegAddress(entry_block, state_ptr,
-                                                    kNextPCVariableName);
+      auto [next_pc_ref, next_pc_ref_type] = inst_lifter.LoadRegAddress(
+          entry_block, state_ptr, kNextPCVariableName);
 
       // Initialize `NEXT_PC`.
       (void) new llvm::StoreInst(pc, next_pc_ref, entry_block);
@@ -327,14 +329,14 @@ bool TraceLifter::Impl::Lift(
       // decoding or lifting the instruction.
       if (inst_addr != trace_addr) {
         if (auto inst_as_trace = get_trace_decl(inst_addr)) {
-          AddTerminatingTailCall(block, inst_as_trace);
+          AddTerminatingTailCall(block, inst_as_trace, *intrinsics);
           continue;
         }
       }
 
       // No executable bytes here.
       if (!ReadInstructionBytes(inst_addr)) {
-        AddTerminatingTailCall(block, intrinsics->missing_block);
+        AddTerminatingTailCall(block, intrinsics->missing_block, *intrinsics);
         continue;
       }
 
@@ -344,7 +346,7 @@ bool TraceLifter::Impl::Lift(
 
       auto lift_status = inst_lifter.LiftIntoBlock(inst, block, state_ptr);
       if (kLiftedInstruction != lift_status) {
-        AddTerminatingTailCall(block, intrinsics->error);
+        AddTerminatingTailCall(block, intrinsics->error, *intrinsics);
         continue;
       }
 
@@ -357,7 +359,7 @@ bool TraceLifter::Impl::Lift(
                                             delayed_inst)) {
           LOG(ERROR) << "Couldn't read delayed inst "
                      << delayed_inst.Serialize();
-          AddTerminatingTailCall(block, intrinsics->error);
+          AddTerminatingTailCall(block, intrinsics->error, *intrinsics);
           continue;
         }
       }
@@ -375,7 +377,7 @@ bool TraceLifter::Impl::Lift(
         lift_status = inst_lifter.LiftIntoBlock(
             delayed_inst, into_block, state_ptr, true /* is_delayed */);
         if (kLiftedInstruction != lift_status) {
-          AddTerminatingTailCall(block, intrinsics->error);
+          AddTerminatingTailCall(block, intrinsics->error, *intrinsics);
         }
       };
 
@@ -383,7 +385,7 @@ bool TraceLifter::Impl::Lift(
       switch (inst.category) {
         case Instruction::kCategoryInvalid:
         case Instruction::kCategoryError:
-          AddTerminatingTailCall(block, intrinsics->error);
+          AddTerminatingTailCall(block, intrinsics->error, *intrinsics);
           break;
 
         case Instruction::kCategoryNormal:
@@ -404,12 +406,12 @@ bool TraceLifter::Impl::Lift(
 
         case Instruction::kCategoryIndirectJump: {
           try_add_delay_slot(true, block);
-          AddTerminatingTailCall(block, intrinsics->jump);
+          AddTerminatingTailCall(block, intrinsics->jump, *intrinsics);
           break;
         }
 
         case Instruction::kCategoryAsyncHyperCall:
-          AddCall(block, intrinsics->async_hyper_call);
+          AddCall(block, intrinsics->async_hyper_call, *intrinsics);
           goto check_call_return;
 
         case Instruction::kCategoryIndirectFunctionCall: {
@@ -422,13 +424,10 @@ bool TraceLifter::Impl::Lift(
           const auto next_pc_ref =
               LoadNextProgramCounterRef(fall_through_block);
           llvm::IRBuilder<> ir(fall_through_block);
-          ir.CreateStore(
-              ir.CreateLoad(ret_pc_ref->getType()->getPointerElementType(),
-                            ret_pc_ref),
-              next_pc_ref);
+          ir.CreateStore(ir.CreateLoad(word_type, ret_pc_ref), next_pc_ref);
           ir.CreateBr(GetOrCreateBranchNotTakenBlock());
 
-          AddCall(block, intrinsics->function_call);
+          AddCall(block, intrinsics->function_call, *intrinsics);
           llvm::BranchInst::Create(fall_through_block, block);
           block = fall_through_block;
           continue;
@@ -455,15 +454,12 @@ bool TraceLifter::Impl::Lift(
           llvm::BranchInst::Create(taken_block, not_taken_block,
                                    LoadBranchTaken(block), block);
 
-          AddCall(taken_block, intrinsics->function_call);
+          AddCall(taken_block, intrinsics->function_call, *intrinsics);
 
           const auto ret_pc_ref = LoadReturnProgramCounterRef(taken_block);
           const auto next_pc_ref = LoadNextProgramCounterRef(taken_block);
           llvm::IRBuilder<> ir(taken_block);
-          ir.CreateStore(
-              ir.CreateLoad(ret_pc_ref->getType()->getPointerElementType(),
-                            ret_pc_ref),
-              next_pc_ref);
+          ir.CreateStore(ir.CreateLoad(word_type, ret_pc_ref), next_pc_ref);
           ir.CreateBr(orig_not_taken_block);
           block = orig_not_taken_block;
           continue;
@@ -483,16 +479,13 @@ bool TraceLifter::Impl::Lift(
           if (inst.branch_not_taken_pc != inst.branch_taken_pc) {
             trace_work_list.insert(inst.branch_taken_pc);
             auto target_trace = get_trace_decl(inst.branch_taken_pc);
-            AddCall(block, target_trace);
+            AddCall(block, target_trace, *intrinsics);
           }
 
           const auto ret_pc_ref = LoadReturnProgramCounterRef(block);
           const auto next_pc_ref = LoadNextProgramCounterRef(block);
           llvm::IRBuilder<> ir(block);
-          ir.CreateStore(
-              ir.CreateLoad(ret_pc_ref->getType()->getPointerElementType(),
-                            ret_pc_ref),
-              next_pc_ref);
+          ir.CreateStore(ir.CreateLoad(word_type, ret_pc_ref), next_pc_ref);
           ir.CreateBr(GetOrCreateBranchNotTakenBlock());
 
           continue;
@@ -526,16 +519,13 @@ bool TraceLifter::Impl::Lift(
           trace_work_list.insert(inst.branch_taken_pc);
           auto target_trace = get_trace_decl(inst.branch_taken_pc);
 
-          AddCall(taken_block, intrinsics->function_call);
-          AddCall(taken_block, target_trace);
+          AddCall(taken_block, intrinsics->function_call, *intrinsics);
+          AddCall(taken_block, target_trace, *intrinsics);
 
           const auto ret_pc_ref = LoadReturnProgramCounterRef(taken_block);
           const auto next_pc_ref = LoadNextProgramCounterRef(taken_block);
           llvm::IRBuilder<> ir(taken_block);
-          ir.CreateStore(
-              ir.CreateLoad(ret_pc_ref->getType()->getPointerElementType(),
-                            ret_pc_ref),
-              next_pc_ref);
+          ir.CreateStore(ir.CreateLoad(word_type, ret_pc_ref), next_pc_ref);
           ir.CreateBr(orig_not_taken_block);
           block = orig_not_taken_block;
           continue;
@@ -554,13 +544,13 @@ bool TraceLifter::Impl::Lift(
           llvm::BranchInst::Create(do_hyper_call, GetOrCreateNextBlock(),
                                    LoadBranchTaken(block), block);
           block = do_hyper_call;
-          AddCall(block, intrinsics->async_hyper_call);
+          AddCall(block, intrinsics->async_hyper_call, *intrinsics);
           goto check_call_return;
         }
 
         check_call_return:
           do {
-            auto pc = LoadProgramCounter(block);
+            auto pc = LoadProgramCounter(block, *intrinsics);
             auto ret_pc = llvm::ConstantInt::get(inst_lifter.impl->word_type,
                                                  inst.next_pc);
 
@@ -569,14 +559,15 @@ bool TraceLifter::Impl::Lift(
             auto unexpected_ret_pc =
                 llvm::BasicBlock::Create(context, "", func);
             ir.CreateCondBr(eq, GetOrCreateNextBlock(), unexpected_ret_pc);
-            AddTerminatingTailCall(unexpected_ret_pc,
-                                   intrinsics->missing_block);
+            AddTerminatingTailCall(unexpected_ret_pc, intrinsics->missing_block,
+                                   *intrinsics);
           } while (false);
           break;
 
         case Instruction::kCategoryFunctionReturn:
           try_add_delay_slot(true, block);
-          AddTerminatingTailCall(block, intrinsics->function_return);
+          AddTerminatingTailCall(block, intrinsics->function_return,
+                                 *intrinsics);
           break;
 
         case Instruction::kCategoryConditionalFunctionReturn: {
@@ -600,7 +591,8 @@ bool TraceLifter::Impl::Lift(
           llvm::BranchInst::Create(taken_block, not_taken_block,
                                    LoadBranchTaken(block), block);
 
-          AddTerminatingTailCall(taken_block, intrinsics->function_return);
+          AddTerminatingTailCall(taken_block, intrinsics->function_return,
+                                 *intrinsics);
           block = orig_not_taken_block;
           continue;
         }
@@ -653,7 +645,7 @@ bool TraceLifter::Impl::Lift(
           llvm::BranchInst::Create(taken_block, not_taken_block,
                                    LoadBranchTaken(block), block);
 
-          AddTerminatingTailCall(taken_block, intrinsics->jump);
+          AddTerminatingTailCall(taken_block, intrinsics->jump, *intrinsics);
           block = orig_not_taken_block;
           continue;
         }
@@ -662,7 +654,7 @@ bool TraceLifter::Impl::Lift(
 
     for (auto &block : *func) {
       if (!block.getTerminator()) {
-        AddTerminatingTailCall(&block, intrinsics->missing_block);
+        AddTerminatingTailCall(&block, intrinsics->missing_block, *intrinsics);
       }
     }
 

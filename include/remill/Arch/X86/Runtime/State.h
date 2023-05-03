@@ -322,6 +322,7 @@ struct FpuFXSAVE64 {
 
 // FP register state that conforms with `FXSAVE` and `FXSAVE64`.
 union alignas(16) FPU final {
+  FPU() {}
   struct : public FpuFSAVE {
     uint8_t _padding0[512 - sizeof(FpuFSAVE)];
   } __attribute__((packed)) fsave;

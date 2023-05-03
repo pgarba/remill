@@ -21,7 +21,10 @@
 namespace llvm {
 class ConstantArray;
 class Function;
+class FunctionType;
+class IntegerType;
 class Module;
+class PointerType;
 class Value;
 }  // namespace llvm
 namespace remill {
@@ -99,6 +102,10 @@ class IntrinsicTable {
   llvm::Function *compare_eq;
   llvm::Function *compare_neq;
 
+  llvm::FunctionType *const lifted_function_type;
+  llvm::PointerType *const state_ptr_type;
+  llvm::IntegerType *const pc_type;
+  llvm::PointerType *const mem_ptr_type;
 
  private:
   IntrinsicTable(void) = delete;
