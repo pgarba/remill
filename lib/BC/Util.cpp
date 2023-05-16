@@ -382,7 +382,6 @@ llvm::GlobalVariable *FindGlobaVariable(llvm::Module *module,
 std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch) {
   auto arch_name = GetArchName(arch->arch_name);
   std::string path = FindSemanticsBitcodeFile(arch_name);
-  llvm::outs() << "Loading " << arch_name << " semantics from file " << path;
   auto module = LoadModuleFromFile(arch->context, path);
   arch->PrepareModule(module);
   arch->InitFromSemanticsModule(module.get());
