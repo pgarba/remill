@@ -195,6 +195,7 @@ if(WIN32)
     /wd4245 /wd4706 /wd4310 /wd4701 /wd4703 /wd4389 /wd4611
     /wd4805 /wd4204 /wd4577 /wd4091 /wd4592 /wd4324 
     -Xclang -mlong-double-80 /DLLVM_FORCE_USE_OLD_TOOLCHAIN
+    -fmsc-version=1930
   )
 
   target_compile_definitions(remill_settings INTERFACE
@@ -206,6 +207,12 @@ if(WIN32)
     _SCL_SECURE_NO_WARNINGS
     GOOGLE_PROTOBUF_NO_RTTI
   )
+
+  set(VCPKG_TARGET_ARCHITECTURE x64)
+  set(VCPKG_CRT_LINKAGE dynamic)
+  set(VCPKG_LIBRARY_LINKAGE dynamic)
+  set(VCPKG_PLATFORM_TOOLSET "v143")
+  set(VCPKG_DEP_INFO_OVERRIDE_VARS "v143")
 
 else()
   # warnings and compiler settings
