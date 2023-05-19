@@ -413,7 +413,7 @@ LoadModuleFromFile(llvm::LLVMContext *context,
   auto module = llvm::parseIRFile(file_name.string(), err, *context);
 
   if (!module) {
-    llvm::outs() << "Unable to parse module file " << file_name << ": "
+    llvm::outs() << "Unable to parse module file " << file_name.string() << ": "
                << err.getMessage().str();
     return {};
   }

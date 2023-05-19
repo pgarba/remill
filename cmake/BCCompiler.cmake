@@ -161,7 +161,8 @@ function(add_runtime target_name)
       #
       # When the versions do not match, the compilation will fail; we don't really care about
       # this, as the second compiler is only really used to output BC files.
-      set(additional_windows_settings "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+      # Also set -mlong-double-80 to compile on Windows with 16 byte long double.
+      set(additional_windows_settings "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" "-mlong-double-80")
     endif()
 
   if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
