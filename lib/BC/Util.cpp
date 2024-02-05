@@ -561,6 +561,7 @@ static const char *gSemanticsSearchPaths[] = {
     "/usr/local/share/remill/" MAJOR_MINOR "/semantics",
     "/usr/share/remill/" MAJOR_MINOR "/semantics",
     "/share/remill/" MAJOR_MINOR "/semantics",
+    "bc"
 };
 
 }  // namespace
