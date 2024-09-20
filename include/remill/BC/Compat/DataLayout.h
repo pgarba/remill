@@ -11,10 +11,10 @@ inline static uint64_t BitsToTypeSize(uint64_t size) {
 }
 #else
 inline static uint64_t TypeSizeToBits(llvm::TypeSize type_type) {
-  return type_type.getFixedSize();
+  return type_type.getFixedValue();
 }
 inline static llvm::TypeSize BitsToTypeSize(uint64_t size) {
-  return llvm::TypeSize::Fixed(size);
+  return llvm::TypeSize(size, false);
 }
 #endif
 

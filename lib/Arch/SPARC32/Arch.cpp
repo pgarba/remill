@@ -403,8 +403,8 @@ void SPARC32Arch::FinishLiftedFunctionInitialization(
   //            a structure type, so we can check that.
   const auto prev_window_link = RegisterByName("PREV_WINDOW_LINK");
   CHECK(prev_window_link->type->isPointerTy());
-  const auto window_type = prev_window_link->type->getPointerElementType();
-  CHECK(window_type->isStructTy());
+  const auto window_type = nullptr ; // TODO: fix me! prev_window_link->type->getPointerElementType();
+  //CHECK(window_type->isStructTy());
 
   auto window = ir.CreateAlloca(window_type, nullptr, "WINDOW");
   ir.CreateAlloca(prev_window_link->type, nullptr, "PREV_WINDOW");

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <cstdint>
+
 #include "remill/Arch/Instruction.h"
 
 #include <glog/logging.h>

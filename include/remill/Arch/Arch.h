@@ -27,7 +27,7 @@
 #include <remill/BC/Compat/CallingConvention.h>
 
 #include <llvm/ADT/SmallVector.h>
-#include <llvm/ADT/Triple.h>
+#include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/IRBuilder.h>
 #pragma clang diagnostic pop

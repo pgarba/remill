@@ -353,8 +353,8 @@ llvm::Value *InstructionLifter::LoadWordRegValOrZero(llvm::BasicBlock *block,
   }
 
   auto val = LoadRegValue(block, state_ptr, reg_name);
-  auto val_type = llvm::dyn_cast_or_null<llvm::IntegerType>(val->getType());
-  auto word_type = zero->getType();
+  llvm::IntegerType *val_type = llvm::dyn_cast_or_null<llvm::IntegerType>(val->getType());
+  llvm::IntegerType *word_type = llvm::dyn_cast_or_null<llvm::IntegerType>(zero->getType());
 
   CHECK(val_type) << "Register " << reg_name << " expected to be an integer.";
 

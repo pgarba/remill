@@ -20,6 +20,7 @@
 #include <glog/logging.h>
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/IR/AttributeMask.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
@@ -637,12 +638,8 @@ void Arch::PrepareModuleDataLayout(llvm::Module *mod) const {
 
   for (llvm::Function &func : *mod) {
     auto attribs = func.getAttributes();
-#if LLVM_VERSION_NUMBER < LLVM_VERSION(14, 0)
-    attribs = attribs.removeAttributes(
-#else
-    attribs = attribs.removeAttributesAtIndex(
-#endif
-        context, llvm::AttributeLoc::FunctionIndex, target_attribs);
+    attribs = attribs.removeFnAttributes(context,
+                                         llvm::AttributeMask(target_attribs));
     func.setAttributes(attribs);
   }
 }
