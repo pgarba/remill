@@ -17,6 +17,7 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 
 #ifndef REMILL_OS
 #  if defined(__APPLE__)
