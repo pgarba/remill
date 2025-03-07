@@ -349,7 +349,8 @@ llvm::Value *LoadBranchTaken(llvm::BasicBlock *block) {
   llvm::IRBuilder<> ir(block);
   auto i8_type = llvm::Type::getInt8Ty(block->getContext());
   auto cond = ir.CreateLoad(
-      i8_type, FindVarInFunction(block->getParent(), kBranchTakenVariableName).first);
+      i8_type,
+      FindVarInFunction(block->getParent(), kBranchTakenVariableName).first);
   auto true_val = llvm::ConstantInt::get(cond->getType(), 1);
   return ir.CreateICmpEQ(cond, true_val);
 }
@@ -382,7 +383,8 @@ llvm::GlobalVariable *FindGlobaVariable(llvm::Module *module,
 std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch) {
   auto arch_name = GetArchName(arch->arch_name);
   std::string path = FindSemanticsBitcodeFile(arch_name);
-  llvm::outs() << "Loading " << arch_name << " semantics from file " << path << "\n";
+  llvm::outs() << "Loading " << arch_name << " semantics from file " << path
+               << "\n";
   auto module = LoadModuleFromFile(arch->context, path);
   arch->PrepareModule(module);
   arch->InitFromSemanticsModule(module.get());
@@ -414,7 +416,7 @@ LoadModuleFromFile(llvm::LLVMContext *context,
 
   if (!module) {
     llvm::outs() << "Unable to parse module file " << file_name.string() << ": "
-               << err.getMessage().str();
+                 << err.getMessage().str();
     return {};
   }
 
@@ -561,8 +563,7 @@ static const char *gSemanticsSearchPaths[] = {
     "/usr/local/share/remill/" MAJOR_MINOR "/semantics",
     "/usr/share/remill/" MAJOR_MINOR "/semantics",
     "/share/remill/" MAJOR_MINOR "/semantics",
-    "bc"
-};
+    "bc"};
 
 }  // namespace
 
@@ -848,7 +849,7 @@ static llvm::Type *RecontextualizeType(llvm::Type *type,
     case llvm::Type::PPC_FP128TyID: return llvm::Type::getPPC_FP128Ty(context);
     case llvm::Type::LabelTyID: return llvm::Type::getLabelTy(context);
     case llvm::Type::MetadataTyID: return llvm::Type::getMetadataTy(context);
-    case llvm::Type::X86_MMXTyID: return llvm::Type::getX86_MMXTy(context);
+    //case llvm::Type::X86_MMXTyID: return llvm::Type::getX86_MMXTy(context);
     case llvm::Type::TokenTyID: return llvm::Type::getTokenTy(context);
     case llvm::Type::IntegerTyID: {
       auto int_type = llvm::dyn_cast<llvm::IntegerType>(type);
@@ -1779,7 +1780,7 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
   const auto initial_addr = addr;
   auto module = intrinsics.error->getParent();
   auto &context = module->getContext();
-  llvm::DataLayout dl(module);
+  llvm::DataLayout dl(module->getDataLayout());
   llvm::Value *args_2[2] = {mem_ptr, addr};
   auto index_type = llvm::Type::getIntNTy(context, dl.getPointerSizeInBits(0));
 
@@ -1808,9 +1809,9 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
       return ir.CreateLoad(type, res);
     }
 
-    case llvm::Type::X86_MMXTyID:
-      return ir.CreateBitCast(ir.CreateCall(intrinsics.read_memory_64, args_2),
-                              type);
+      //case llvm::Type::X86_MMXTyID:
+      //  return ir.CreateBitCast(ir.CreateCall(intrinsics.read_memory_64, args_2),
+      //                          type);
 
     case llvm::Type::IntegerTyID:
       switch (dl.getTypeAllocSize(type)) {
@@ -1841,8 +1842,8 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
         auto call_arg_addr = ir.CreateAdd(
             addr, llvm::ConstantInt::get(addr->getType(), i, false));
         llvm::Value *call_args[2] = {mem_ptr, call_arg_addr};
-        auto byte = ir.CreateCall(intrinsics.read_memory_8,
-                                  llvm::ArrayRef(call_args));
+        auto byte =
+            ir.CreateCall(intrinsics.read_memory_8, llvm::ArrayRef(call_args));
         auto byte_ptr = ir.CreateInBoundsGEP(i8_array, byte_array,
                                              llvm::ArrayRef(gep_indices));
         ir.CreateStore(byte, byte_ptr);
@@ -1952,7 +1953,7 @@ llvm::Value *StoreToMemory(const IntrinsicTable &intrinsics,
   const auto initial_addr = addr;
   auto module = intrinsics.error->getParent();
   auto &context = module->getContext();
-  llvm::DataLayout dl(module);
+  llvm::DataLayout dl(module->getDataLayout());
   llvm::Value *args_3[3] = {mem_ptr, addr, val_to_store};
   auto index_type = llvm::Type::getInt32Ty(context);
 
@@ -1986,11 +1987,11 @@ llvm::Value *StoreToMemory(const IntrinsicTable &intrinsics,
       return ir.CreateCall(intrinsics.write_memory_f80, args_3);
     }
 
-    case llvm::Type::X86_MMXTyID: {
-      auto i64_type = llvm::Type::getInt64Ty(context);
-      args_3[2] = ir.CreateBitCast(val_to_store, i64_type);
-      return ir.CreateCall(intrinsics.write_memory_64, args_3);
-    }
+      //case llvm::Type::X86_MMXTyID: {
+      //  auto i64_type = llvm::Type::getInt64Ty(context);
+      //  args_3[2] = ir.CreateBitCast(val_to_store, i64_type);
+      //  return ir.CreateCall(intrinsics.write_memory_64, args_3);
+      //}
 
     case llvm::Type::IntegerTyID:
       switch (dl.getTypeAllocSize(type)) {

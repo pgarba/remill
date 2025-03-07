@@ -14,7 +14,7 @@ set(DEFAULT_BC_COMPILER_FLAGS
   -Wno-extended-offsetof -Wno-gnu-statement-expression -Wno-c99-extensions
   -Wno-ignored-attributes -mtune=generic -fno-vectorize -fno-slp-vectorize
   -Wno-variadic-macros -Wno-c11-extensions -Wno-c++11-extensions
-  -ffreestanding -fno-common -fno-builtin -fno-exceptions -fno-rtti
+  -fno-common -fno-builtin -fno-exceptions -fno-rtti
   -fno-asynchronous-unwind-tables -Wno-unneeded-internal-declaration
   -Wno-unused-function -Wgnu-inline-cpp-without-extern -std=c++14
   -Wno-pass-failed=transform-warning
