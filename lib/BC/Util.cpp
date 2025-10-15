@@ -1122,17 +1122,6 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
         moved_c = ret;
         return ret;
       }
-      case llvm::Instruction::Mul: {
-        const auto b = llvm::dyn_cast<llvm::MulOperator>(ce);
-        auto ret = llvm::ConstantExpr::getMul(
-            MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
-                                   type_map),
-            MoveConstantIntoModule(ce->getOperand(1), dest_module, value_map,
-                                   type_map),
-            b->hasNoUnsignedWrap(), b->hasNoSignedWrap());
-        moved_c = ret;
-        return ret;
-      }
       case llvm::Instruction::IntToPtr: {
         auto ret = llvm::ConstantExpr::getIntToPtr(
             MoveConstantIntoModule(ce->getOperand(0), dest_module, value_map,
