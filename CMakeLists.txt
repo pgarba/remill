@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.5)
 include(cmake/vcpkg_helper.cmake)
 
 # Setup to use ccache
