@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>

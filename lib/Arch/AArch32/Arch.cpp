@@ -16,7 +16,7 @@
 
 #include "Arch.h"
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/DataLayout.h>
@@ -78,8 +78,7 @@ llvm::Triple AArch32Arch::Triple(void) const {
   switch (arch_name) {
     case kArchAArch32LittleEndian: triple.setArch(llvm::Triple::arm); break;
     default:
-      LOG(FATAL) << "Cannot get triple for non-aarch32 architecture "
-                 << GetArchName(arch_name);
+      assert(false);
   }
 
   return triple;
@@ -90,7 +89,7 @@ llvm::DataLayout AArch32Arch::DataLayout(void) const {
   std::string dl;
   switch (os_name) {
     case kOSInvalid:
-      LOG(FATAL) << "Cannot convert module for an unrecognized OS.";
+      assert(false);
       break;
 
     case kOSLinux:

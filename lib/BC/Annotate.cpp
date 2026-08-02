@@ -67,9 +67,7 @@ llvm::MDNode *TieFunction(llvm::Function *first, llvm::Function *second,
 std::pair<llvm::MDNode *, llvm::MDNode *>
 TieFunctions(llvm::Function *first, llvm::Function *second,
              const std::string &kind) {
-  LOG_IF(FATAL, IsTied(first, kind) || IsTied(second, kind))
-      << "Tried to tie already tied functions " << first->getName().str()
-      << " to " << second->getName().str();
+  assert(!IsTied(first, kind) && !IsTied(second, kind));
 
   return {TieFunction(first, second, kind), TieFunction(second, first, kind)};
 }

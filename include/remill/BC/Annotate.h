@@ -22,7 +22,7 @@
 #pragma clang diagnostic ignored "-Wold-style-cast"
 #pragma clang diagnostic ignored "-Wdocumentation"
 #pragma clang diagnostic ignored "-Wswitch-enum"
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
 #pragma clang diagnostic pop

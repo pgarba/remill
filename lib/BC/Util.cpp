@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 
 #include <sstream>
 #include <system_error>
@@ -60,12 +60,6 @@
 #include "remill/BC/Version.h"
 #include "remill/OS/FileSystem.h"
 
-DECLARE_string(arch);
-
-DEFINE_string(
-    semantics_search_paths, "",
-    "Colon-separated list of search paths to use when searching for semantics files.");
-
 namespace {
 #ifdef _WIN32
 extern "C" std::uint32_t GetProcessId(std::uint32_t handle);
@@ -84,6 +78,9 @@ std::uint32_t nativeGetProcessID(void) {
 }  // namespace
 
 namespace remill {
+
+extern const char *kArchDefault;
+
 namespace detail {
 
 // This is an implementation of the non-UB technique to access private
@@ -189,11 +186,10 @@ llvm::CallInst *AddTerminatingTailCall(llvm::Function *source_func,
 llvm::CallInst *AddTerminatingTailCall(llvm::BasicBlock *source_block,
                                        llvm::Value *dest_func,
                                        const IntrinsicTable &intrinsics) {
-  CHECK(nullptr != dest_func) << "Target function/block does not exist!";
+  assert(nullptr != dest_func);
 
-  LOG_IF(ERROR, source_block->getTerminator())
-      << "Block already has a terminator; not adding fall-through call to: "
-      << (dest_func ? dest_func->getName().str() : "<unreachable>");
+  (void) source_block;
+  (void) dest_func;
 
   llvm::IRBuilder<> ir(source_block);
 
@@ -241,8 +237,7 @@ FindVarInFunction(llvm::Function *function, std::string_view name_,
     return {var, var->getValueType()};
   }
 
-  CHECK(allow_failure) << "Could not find variable " << name_ << " in function "
-                       << function->getName().str();
+  assert(allow_failure);
   return {nullptr, nullptr};
 }
 
@@ -448,8 +443,9 @@ bool StoreModuleToFile(llvm::Module *module, std::string_view file_name,
 
   if (llvm::verifyModule(*module, &error_stream)) {
     error_stream.flush();
-    LOG_IF(FATAL, !allow_failure)
-        << "Error writing module to file " << file_name << ": " << error;
+    assert(allow_failure);
+    (void) file_name;
+    (void) error;
     return false;
   }
 
@@ -460,7 +456,7 @@ bool StoreModuleToFile(llvm::Module *module, std::string_view file_name,
 #  else
   llvm::ToolOutputFile bc(tmp_name.c_str(), ec, llvm::sys::fs::OF_None);
 #  endif
-  CHECK(!ec) << "Unable to open output bitcode file for writing: " << tmp_name;
+  assert(!ec);
 #else
   llvm::tool_output_file bc(tmp_name.c_str(), error, llvm::sys::fs::F_RW);
   CHECK(error.empty() && !bc.os().has_error())
@@ -481,8 +477,8 @@ bool StoreModuleToFile(llvm::Module *module, std::string_view file_name,
 
   } else {
     RemoveFile(tmp_name);
-    LOG_IF(FATAL, !allow_failure)
-        << "Error writing bitcode to file: " << file_name << ".";
+    assert(allow_failure);
+    (void) file_name;
     return false;
   }
 }
@@ -502,8 +498,9 @@ bool StoreModuleIRToFile(llvm::Module *module, std::string_view file_name_,
   auto good = error.empty();
 #endif
   if (!good) {
-    LOG_IF(FATAL, allow_failure)
-        << "Could not save LLVM IR to " << file_name << ": " << error;
+    assert(!allow_failure);
+    (void) file_name;
+    (void) error;
     return false;
   }
   module->print(dest, nullptr);
@@ -567,9 +564,9 @@ static const char *gSemanticsSearchPaths[] = {
 
 }  // namespace
 
-// Find the path to the semantics bitcode file associated with `FLAGS_arch`.
+// Find the path to the semantics bitcode file associated with `kArchDefault`.
 std::string FindTargetSemanticsBitcodeFile(void) {
-  return FindSemanticsBitcodeFile(FLAGS_arch);
+  return FindSemanticsBitcodeFile(kArchDefault);
 }
 
 // Find the path to the semantics bitcode file associated with `REMILL_ARCH`,
@@ -580,18 +577,6 @@ std::string FindHostSemanticsBitcodeFile(void) {
 
 // Find the path to the semantics bitcode file.
 std::string FindSemanticsBitcodeFile(std::string_view arch) {
-  if (!FLAGS_semantics_search_paths.empty()) {
-    std::stringstream pp;
-    pp << FLAGS_semantics_search_paths;
-    for (std::string sem_dir; std::getline(pp, sem_dir, ':');) {
-      std::stringstream ss;
-      ss << sem_dir << "/" << arch << ".bc";
-      if (auto sem_path = ss.str(); FileExists(sem_path)) {
-        return sem_path;
-      }
-    }
-  }
-
   for (auto sem_dir : gSemanticsSearchPaths) {
     std::stringstream ss;
     ss << sem_dir << "/" << arch << ".bc";
@@ -600,7 +585,7 @@ std::string FindSemanticsBitcodeFile(std::string_view arch) {
     }
   }
 
-  LOG(FATAL) << "Cannot find path to " << arch << " semantics bitcode file.";
+  assert(false);
   return "";
 }
 
@@ -762,8 +747,7 @@ static llvm::Constant *CloneConstant(llvm::Constant *val) {
     return llvm::ConstantStruct::get(obj->getType(), elements);
 
   } else {
-    LOG(FATAL)
-        << "Cannot clone " << remill::LLVMThingToString(val);
+    assert(false);
     return val;
   }
 }
@@ -789,9 +773,7 @@ static llvm::Function *DeclareFunctionInModule(llvm::Function *func,
     return dest_func;
   }
 
-  LOG_IF(FATAL, func->hasLocalLinkage())
-      << "Cannot declare internal function " << func->getName().str()
-      << " as external in another module";
+  assert(!func->hasLocalLinkage());
 
   const auto func_type = llvm::dyn_cast<llvm::FunctionType>(
       RecontextualizeType(func->getFunctionType(), dest_module->getContext()));
@@ -918,8 +900,7 @@ static llvm::Type *RecontextualizeType(llvm::Type *type,
     }
 
     default:
-      LOG(FATAL) << "Unable to recontextualize type "
-                 << LLVMThingToString(type);
+      assert(false);
       return nullptr;
   }
 
@@ -1056,8 +1037,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
           return ret;
         }
 
-        LOG(FATAL) << "Unsupported element type in constant data array: "
-                   << remill::LLVMThingToString(el_type);
+        assert(false);
         return nullptr;
       }
     } else if (auto v = llvm::dyn_cast<llvm::ConstantDataVector>(d); v) {
@@ -1065,8 +1045,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
         moved_c = v;
         return v;
       } else {
-        LOG(FATAL)
-            << "Moving constant data vectors across contexts is not yet supported";
+        assert(false);
         return nullptr;
       }
 
@@ -1077,8 +1056,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
       return c;
 
     } else {
-      LOG(FATAL) << "Cannot move constant to destination context: "
-                 << LLVMThingToString(c);
+      assert(false);
       return nullptr;
     }
   } else if (auto ce = llvm::dyn_cast<llvm::ConstantExpr>(c)) {
@@ -1211,8 +1189,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
           return ce;
 
         } else {
-          LOG(FATAL) << "Unsupported CE when moving across context boundaries: "
-                     << LLVMThingToString(ce);
+          assert(false);
           return nullptr;
         }
     }
@@ -1265,8 +1242,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
       return c;
 
     } else {
-      LOG(FATAL) << "Unsupported CA when moving across context boundaries: "
-                 << LLVMThingToString(c);
+      assert(false);
       return nullptr;
     }
 
@@ -1277,8 +1253,7 @@ MoveConstantIntoModule(llvm::Constant *c, llvm::Module *dest_module,
     return c;
 
   } else {
-    LOG(FATAL) << "Unsupported constant when moving across context boundaries: "
-               << LLVMThingToString(c);
+    assert(false);
     return nullptr;
   }
 }
@@ -1319,9 +1294,7 @@ DeclareVarInModule(llvm::GlobalVariable *var, llvm::Module *dest_module,
     dest_var->setInitializer(
         MoveConstantIntoModule(initializer, dest_module, value_map, type_map));
   } else {
-    LOG_IF(FATAL, var->hasLocalLinkage())
-        << "Cannot declare internal variable " << var->getName().str()
-        << " as external in another module";
+    assert(!var->hasLocalLinkage());
   }
 
   return dest_var;
@@ -1710,7 +1683,7 @@ void MoveFunctionIntoModule(llvm::Function *func, llvm::Module *dest_module) {
 
     // TODO(pag): Probably clone it into the destination module.
   } else {
-    LOG(FATAL) << "TODO: Not yet supported.";
+    assert(false);
   }
 
   // There was a prior existing_decl_in_dest_module declaration in out target
@@ -1923,8 +1896,7 @@ llvm::Value *LoadFromMemory(const IntrinsicTable &intrinsics,
     case llvm::Type::TokenTyID:
     case llvm::Type::FunctionTyID:
     default:
-      LOG(FATAL) << "Unable to produce IR sequence to load type "
-                 << remill::LLVMThingToString(type) << " from memory";
+      assert(false);
       return nullptr;
   }
 }
@@ -2109,8 +2081,7 @@ llvm::Value *StoreToMemory(const IntrinsicTable &intrinsics,
     case llvm::Type::TokenTyID:
     case llvm::Type::FunctionTyID:
     default:
-      LOG(FATAL) << "Unable to produce IR sequence to store type "
-                 << remill::LLVMThingToString(type) << " to memory";
+      assert(false);
       return nullptr;
   }
 }
@@ -2186,15 +2157,13 @@ BuildIndexes(const llvm::DataLayout &dl, llvm::Type *type, size_t offset,
     // It is possible that this gets called on an unexpected type
     // such as FixedVectorType; if so, report the issue and fix if/when it
     // happens
-    LOG(FATAL) << "Called BuildIndexes on unsupported type: "
-               << remill::LLVMThingToString(type);
+    assert(false);
 #if LLVM_VERSION_NUMBER >= LLVM_VERSION(11, 0)
   } else if (auto svt_type = llvm::dyn_cast<llvm::ScalableVectorType>(type);
              svt_type) {
 
     // same as above, but for scalable vectors
-    LOG(FATAL) << "Called BuildIndexes on unsupported type: "
-               << remill::LLVMThingToString(type);
+    assert(false);
 #endif
   }
 

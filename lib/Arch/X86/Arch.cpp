@@ -16,7 +16,7 @@
 
 #include "../Arch.h"  // For `Arch` and `ArchImpl`.
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/DataLayout.h>
@@ -526,17 +526,13 @@ static void DecodeImmediate(Instruction &inst, const xed_decoded_inst_t *xedd,
 
   if (XED_OPERAND_PTR == op_name) {
     auto ptr_size = xed_decoded_inst_get_branch_displacement_width_bits(xedd);
-    CHECK(ptr_size <= operand_size)
-        << "Pointer size is greater than effective operand size at " << std::hex
-        << inst.pc << ".";
+    assert(ptr_size <= operand_size);
     op.size = ptr_size;
 
     val = static_cast<uint64_t>(xed_decoded_inst_get_branch_displacement(xedd));
   } else {
     auto imm_size = xed_decoded_inst_get_immediate_width_bits(xedd);
-    CHECK(imm_size <= operand_size)
-        << "Immediate size is greater than effective operand size at "
-        << std::hex << inst.pc << ".";
+    assert(imm_size <= operand_size);
     op.size = imm_size;
 
     if (XED_OPERAND_IMM0SIGNED == op_name ||
@@ -554,8 +550,7 @@ static void DecodeImmediate(Instruction &inst, const xed_decoded_inst_t *xedd,
       val = static_cast<uint64_t>(xed_decoded_inst_get_second_immediate(xedd));
 
     } else {
-      CHECK(false) << "Unexpected immediate type "
-                   << xed_operand_enum_t2str(op_name) << ".";
+      assert(false);
     }
   }
 
@@ -569,7 +564,7 @@ static void DecodeRegister(Instruction &inst, const xed_decoded_inst_t *xedd,
                            const xed_operand_t *xedo,
                            xed_operand_enum_t op_name) {
   auto reg = xed_decoded_inst_get_reg(xedd, op_name);
-  CHECK(XED_REG_INVALID != reg) << "Cannot get name of invalid register.";
+  assert(XED_REG_INVALID != reg);
 
   Operand op = {};
   op.type = Operand::kTypeRegister;
@@ -716,8 +711,7 @@ static uint16_t DecodeFpuOpcode(Instruction &inst) {
     }
   }
 
-  CHECK(i >= 2) << "Failed to find FPU opcode byte for instruction "
-                << inst.Serialize();
+  assert(i >= 2);
 
   uint16_t opcode = 0;
   opcode |= static_cast<uint16_t>(bytes[0] & 3) << 8;
@@ -782,8 +776,7 @@ static void DecodeOperand(Instruction &inst, const xed_decoded_inst_t *xedd,
       break;
 
     default:
-      LOG(FATAL) << "Unexpected operand type "
-                 << xed_operand_enum_t2str(op_name) << ".";
+      assert(false);
       return;
   }
 }
@@ -886,8 +879,7 @@ llvm::Triple X86Arch::Triple(void) const {
     case kArchX86_AVX:
     case kArchX86_AVX512: triple.setArch(llvm::Triple::x86); break;
     default:
-      LOG(FATAL) << "Cannot get triple for non-x86 architecture "
-                 << GetArchName(arch_name);
+      assert(false);
   }
 
   return triple;
@@ -898,7 +890,7 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
   std::string dl;
   switch (os_name) {
     case kOSInvalid:
-      LOG(FATAL) << "Cannot convert module for an unrecognized OS.";
+      assert(false);
       break;
 
     case kOSLinux:
@@ -915,8 +907,7 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
           dl = "e-m:e-p:32:32-f64:32:64-f80:32-n8:16:32-S128";
           break;
         default:
-          LOG(FATAL) << "Cannot get data layout non-x86 architecture "
-                     << GetArchName(arch_name);
+          assert(false);
           break;
       }
       break;
@@ -934,8 +925,7 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
           dl = "e-m:o-p:32:32-f64:32:64-f80:128-n8:16:32-S128";
           break;
         default:
-          LOG(FATAL) << "Cannot get data layout for non-x86 architecture "
-                     << GetArchName(arch_name);
+          assert(false);
       }
       break;
 
@@ -952,8 +942,7 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
           dl = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32";
           break;
         default:
-          LOG(FATAL) << "Cannot get data layout for non-x86 architecture "
-                     << GetArchName(arch_name);
+          assert(false);
       }
       break;
   }

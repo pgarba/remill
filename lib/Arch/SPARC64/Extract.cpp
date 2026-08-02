@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 
 #include <bitset>
 

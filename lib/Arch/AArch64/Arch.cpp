@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/DataLayout.h>
@@ -516,8 +516,7 @@ llvm::Triple AArch64Arch::Triple(void) const {
     case kArchAArch64LittleEndian: triple.setArch(llvm::Triple::aarch64); break;
 
     default:
-      LOG(FATAL) << "Cannot get triple for non-AArch64 architecture "
-                 << GetArchName(arch_name);
+      assert(false);
       break;
   }
   return triple;
@@ -531,8 +530,7 @@ llvm::DataLayout AArch64Arch::DataLayout(void) const {
       break;
 
     default:
-      LOG(FATAL) << "Cannot get data layout for non-AArch64 architecture "
-                 << GetArchName(arch_name);
+      assert(false);
       break;
   }
   return llvm::DataLayout(dl);
@@ -635,7 +633,7 @@ static std::string RegNameXW(Action action, RegClass rclass, RegUsage rtype,
   CHECK_LE(number, 31U);
 
   std::stringstream ss;
-  CHECK(kActionReadWrite != action);
+  assert(kActionReadWrite != action);
 
   if (31 == number) {
     if (rtype == kUseAsValue) {
@@ -669,7 +667,7 @@ static std::string RegNameFP(Action action, RegClass rclass, RegUsage rtype,
   CHECK_LE(number, 31U);
 
   std::stringstream ss;
-  CHECK(kActionReadWrite != action);
+  assert(kActionReadWrite != action);
 
   if (kActionRead == action) {
     if (kRegB == rclass) {
@@ -683,7 +681,7 @@ static std::string RegNameFP(Action action, RegClass rclass, RegUsage rtype,
     } else if (kRegQ == rclass) {
       ss << "Q";
     } else {
-      CHECK(kRegV == rclass);
+      assert(kRegV == rclass);
       ss << "V";
     }
   } else {
@@ -751,7 +749,7 @@ static Operand::Register Reg(Action action, RegClass rclass, RegUsage rtype,
     reg.name = RegName(action, rclass, rtype, reg_num);
     reg.size = ReadRegSize(rclass);
   } else {
-    LOG(FATAL) << "Reg function only takes a simple read or write action.";
+    assert(false);
   }
   return reg;
 }
@@ -873,7 +871,7 @@ static void AddPCRegMemOp(Instruction &inst, Action action, int64_t disp) {
     AddPCRegOp(inst, Operand::kActionWrite, disp,
                Operand::Address::kMemoryWrite);
   } else {
-    LOG(FATAL) << __FUNCTION__ << " only accepts simple operand actions.";
+    assert(false);
   }
 }
 
@@ -1186,7 +1184,7 @@ static bool DecodeBitMasks(uint64_t N /* one bit */,
 }
 // Utility function for extracting [From, To] bits from a uint32_t.
 static inline uint64_t Extract(uint64_t bits, unsigned from, unsigned to) {
-  CHECK(from < 64 && to < 64 && from >= to);
+  assert(from < 64 && to < 64 && from >= to);
   return (bits >> to) & ((1 << (from - to + 1)) - 1);
 }
 
@@ -3995,7 +3993,7 @@ bool TryDecodeCLZ_64_DP_1SRC(const InstData &data, Instruction &inst) {
 static bool DecodeConditionalRegSelect(const InstData &data, Instruction &inst,
                                        RegClass r_class, int n_regs,
                                        bool invert_cond = false) {
-  CHECK(1 <= n_regs && n_regs <= 3);
+  assert(1 <= n_regs && n_regs <= 3);
 
   AddRegOperand(inst, kActionWrite, r_class, kUseAsValue, data.Rd);
   if (--n_regs > 0) {
@@ -4225,8 +4223,7 @@ static const char *ArrangementSpecifier(uint64_t total_size,
     }
   }
 
-  LOG(FATAL) << "Can't deduce specifier for " << total_size << "-vector with "
-             << element_size << "-bit elements";
+  assert(false);
   return nullptr;
 }
 

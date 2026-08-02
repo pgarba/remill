@@ -16,7 +16,7 @@
 
 #include "remill/BC/IntrinsicTable.h"
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
@@ -32,7 +32,7 @@ namespace {
 // Find a specific function.
 static llvm::Function *FindIntrinsic(llvm::Module *module, const char *name) {
   auto function = FindFunction(module, name);
-  CHECK(nullptr != function) << "Unable to find intrinsic: " << name;
+  assert(nullptr != function);
 
   // We don't want calls to memory intrinsics to be duplicated because then
   // they might have the wrong side effects!

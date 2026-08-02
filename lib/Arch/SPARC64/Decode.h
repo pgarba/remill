@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 
 #include <cstdint>
 

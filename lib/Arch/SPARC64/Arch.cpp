@@ -16,7 +16,7 @@
 
 #include "../Arch.h"  // For `Arch` and `ArchImpl`.
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 
 #include "Decode.h"
 #include "remill/Arch/Instruction.h"
@@ -488,8 +488,7 @@ Arch::ArchPtr Arch::GetSPARC64(llvm::LLVMContext *context_, OSName os_name_,
     return std::make_unique<sparc::SPARC64Arch>(context_, os_name_, arch_name_);
 
   } else {
-    LOG(FATAL) << "Invalid arch name passed to Arch::GetSPARC::"
-               << GetArchName(arch_name_);
+    assert(false);
     return {};
   }
 }

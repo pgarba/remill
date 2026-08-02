@@ -100,7 +100,7 @@ class TraceLifter::Impl {
   }
 
   llvm::BasicBlock *GetOrCreateBranchNotTakenBlock(void) {
-    CHECK(inst.branch_not_taken_pc != 0);
+    assert(inst.branch_not_taken_pc != 0);
     inst_work_list.insert(inst.branch_not_taken_pc);
     return GetOrCreateBlock(inst.branch_not_taken_pc);
   }

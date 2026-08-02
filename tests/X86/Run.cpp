@@ -17,8 +17,8 @@
 #define _XOPEN_SOURCE
 
 #include <dlfcn.h>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <gtest/gtest.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -40,13 +40,28 @@
 #include "remill/Arch/X86/Runtime/State.h"
 #include "tests/X86/Test.h"
 
-DECLARE_string(arch);
-DECLARE_string(os);
+// Simple command-line argument parser to replace gflags.
+static std::string GetArgValue(int argc, char *argv[], const char *flag) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      return argv[i + 1];
+    }
+  }
+  return "";
+}
 
-DEFINE_bool(
-    enable_fpu_cs_ds_checking, false,
-    "Trace values of fxsave.cs and fxsave.ds for 32-bit instructions. Disabled "
-    "by default since it is commonly broken in virtualized environments.");
+static bool GetBoolArg(int argc, char *argv[], const char *flag, bool default_val) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      std::string val = argv[i + 1];
+      return (val == "true" || val == "1" || val == "yes");
+    }
+  }
+  return default_val;
+}
+
+// Gflags replacement: enable_fpu_cs_ds_checking
+static bool g_enable_fpu_cs_ds_checking = false;
 
 namespace {
 
@@ -518,7 +533,7 @@ static bool AreFCSAndFDSDeprecated(void) {
   uint32_t ecx = 0;
   uint32_t edx = 0;
 
-  if (!FLAGS_enable_fpu_cs_ds_checking) {
+  if (!g_enable_fpu_cs_ds_checking) {
 
     // pretend FCS and FDS are deprecated if not checking via cmdline flag
     return true;
@@ -551,7 +566,7 @@ static void ImportX87State(State *state) {
 
     // Copy over the MMX data. A good guess for MMX data is that the
     // value looks like it's infinity.
-    DLOG(INFO) << "Importing MMX state.";
+    // Importing MMX state.
     for (size_t i = 0; i < 8; ++i) {
       if (static_cast<uint16_t>(0xFFFFU) == fpu.fxsave.st[i].infinity) {
         state->mmx.elems[i].val.qwords.elems[0] = fpu.fxsave.st[i].mmx;
@@ -560,7 +575,7 @@ static void ImportX87State(State *state) {
 
     // Looks like X87 state.
   } else {
-    DLOG(INFO) << "Importing FPU state.";
+    // Importing FPU state.
     for (size_t i = 0; i < 8; ++i) {
       auto st = *reinterpret_cast<long double *>(&(fpu.fxsave.st[i].st));
       state->st.elems[i].val = static_cast<float80_t>(st);
@@ -634,9 +649,9 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
     return;
   }
 
-  DLOG(INFO) << "Testing instruction: " << info->test_name << ": " << desc;
+  // Testing instruction: info->test_name: desc
   if (sigsetjmp(gUnsupportedInstrBuf, true)) {
-    DLOG(INFO) << "Unsupported instruction " << info->test_name;
+    // Unsupported instruction
     return;
   }
 
@@ -920,16 +935,9 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
 #pragma clang diagnostic ignored "-Winvalid-offsetof"
 
     for (size_t i = 0; i < sizeof(State); ++i) {
-      LOG_IF(ERROR, lifted_state_bytes[i] != native_state_bytes[i])
-          << "Bytes at offset " << i << " are different: "
-          << "lifted [" << std::hex
-          << static_cast<unsigned int>(lifted_state_bytes[i]) << "] vs native ["
-          << std::hex << static_cast<unsigned int>(native_state_bytes[i])
-          << "]\n"
-          << std::dec << "vec: " << offsetof(State, vec) << "\n"
-          << "aflag:" << offsetof(State, aflag) << "\n"
-          << "rflag:" << offsetof(State, rflag) << "\n"
-          << "seg:" << offsetof(State, seg) << "\n"
+      (void) lifted_state_bytes;
+      (void) native_state_bytes;
+      (void) i;
           << "addr:" << offsetof(State, addr) << "\n"
           << "gpr:" << offsetof(State, gpr) << "\n"
           << "st:" << offsetof(State, st) << "\n"
@@ -943,15 +951,11 @@ static void RunWithFlags(const test::TestInfo *info, Flags flags,
   }
 
   if (gLiftedStack != gNativeStack) {
-    LOG(ERROR) << "Stacks did not match for " << desc;
+    // Stacks did not match for desc
 
     for (size_t i = 0; i < sizeof(gLiftedStack.bytes); ++i) {
       if (gLiftedStack.bytes[i] != gNativeStack.bytes[i]) {
-        LOG(ERROR) << "Lifted stack at 0x" << std::hex
-                   << reinterpret_cast<uintptr_t>(&(gLiftedStack.bytes[i]))
-                   << " does not match native stack at 0x" << std::hex
-                   << reinterpret_cast<uintptr_t>(&(gNativeStack.bytes[i]))
-                   << std::endl;
+        // Lifted stack does not match native stack
       }
     }
 
@@ -1120,8 +1124,8 @@ static void SetupSignals(void) {
 }
 
 int main(int argc, char **argv) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
-  google::InitGoogleLogging(argv[0]);
+  // Parse command-line flags (gflags replacement)
+  g_enable_fpu_cs_ds_checking = GetBoolArg(argc, argv, "--enable_fpu_cs_ds_checking", false);
 
   InitFlags();
 

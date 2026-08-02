@@ -16,7 +16,7 @@
 
 #include "remill/BC/Optimizer.h"
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DataLayout.h>

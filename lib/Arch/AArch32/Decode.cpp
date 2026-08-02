@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 
 #include <optional>
 
@@ -806,8 +806,7 @@ static void AddShiftRegCarryOperand(Instruction &inst, uint32_t reg_num,
                                         shift_val_expr_c);
       break;
     default:
-      LOG(FATAL) << "Invalid shift bits " << shift_type << " in "
-                 << inst.Serialize();
+      assert(false);
   }
 
   // Extract the sign bit and extend back to I8
@@ -844,8 +843,7 @@ static void AddShiftRegRegOperand(Instruction &inst, uint32_t reg_num,
       op_expr = RORExpr(inst, op_expr, shift_val_expr);
       break;
     default:
-      LOG(FATAL) << "Invalid shift bits " << shift_type << " in "
-                 << inst.Serialize();
+      assert(false);
   }
 
   AddExprOp(inst, op_expr);
@@ -1024,8 +1022,7 @@ static bool DecodeCondition(Instruction &inst, uint32_t cond) {
       is_cond = false;
       break;
     default:
-      LOG(FATAL) << "Invalid condition bits " << cond << " in "
-                 << inst.Serialize();
+      assert(false);
       break;
   }
 
@@ -2145,8 +2142,7 @@ static bool TryDecodeLoadStoreDualHalfSignedBReg(Instruction &inst,
   // Permitted UNPREDICTABLE behavior for STRDp only when rt is r15 only
   if (enc.rt == kPCRegNum) {
     // The instruction executes with the additional decode: t2 = t.
-    CHECK(!enc.o1 && enc.op2 == 0b11u)
-              << "Rt is R15 for an instruction other than STRDp!!";
+    assert(!enc.o1 && enc.op2 == 0b11u);
     rt2 = enc.rt;
   }
 

@@ -133,20 +133,6 @@ target_link_libraries(thirdparty_xed INTERFACE
   ${XED_LIBRARIES}
 )
 
-# Google glog module
-find_package(glog CONFIG REQUIRED)
-add_library(thirdparty_glog INTERFACE)
-target_link_libraries(thirdparty_glog INTERFACE
-  glog::glog
-)
-
-# Google gflags
-find_package(gflags CONFIG REQUIRED)
-add_library(thirdparty_gflags INTERFACE)
-target_link_libraries(thirdparty_gflags INTERFACE
-  gflags
-)
-
 # Windows SDK
 add_library(thirdparty_win32 INTERFACE)
 if(DEFINED WIN32)
@@ -270,7 +256,7 @@ target_compile_definitions(remill_settings INTERFACE
   "REMILL_BUILD_SEMANTICS_DIR_SPARC64=\"${REMILL_BUILD_SEMANTICS_DIR_SPARC64}\""
 )
 
-set(THIRDPARTY_LIBRARY_LIST thirdparty_llvm thirdparty_xed thirdparty_glog thirdparty_gflags)
+set(THIRDPARTY_LIBRARY_LIST thirdparty_llvm thirdparty_xed)
 target_link_libraries(remill_settings INTERFACE
   ${THIRDPARTY_LIBRARY_LIST}
 )

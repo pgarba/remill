@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/IRBuilder.h>
@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -47,29 +48,39 @@
 #include <string>
 #include <system_error>
 
-DECLARE_string(arch);
-DECLARE_string(os);
+// Simple command-line argument parser to replace gflags.
+static std::string GetArgValue(int argc, char *argv[], const char *flag) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      return argv[i + 1];
+    }
+  }
+  return "";
+}
 
-DEFINE_uint64(address, 0,
-              "Address at which we should assume the bytes are"
-              "located in virtual memory.");
+static uint64_t GetUInt64Arg(int argc, char *argv[], const char *flag, uint64_t default_val) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      char *end = nullptr;
+      uint64_t val = strtoull(argv[i + 1], &end, 10);
+      if (end != argv[i + 1]) {
+        return val;
+      }
+    }
+  }
+  return default_val;
+}
 
-DEFINE_uint64(entry_address, 0,
-              "Address of instruction that should be "
-              "considered the entrypoint of this code. "
-              "Defaults to the value of --address.");
-
-DEFINE_string(bytes, "", "Hex-encoded byte string to lift.");
-
-DEFINE_string(ir_out, "", "Path to file where the LLVM IR should be saved.");
-DEFINE_string(bc_out, "",
-              "Path to file where the LLVM bitcode should be "
-              "saved.");
-
-DEFINE_string(slice_inputs, "",
-              "Comma-separated list of registers to treat as inputs.");
-DEFINE_string(slice_outputs, "",
-              "Comma-separated list of registers to treat as outputs.");
+// Global variables to replace gflags
+static std::string g_arch;
+static std::string g_os;
+static uint64_t g_address = 0;
+static uint64_t g_entry_address = 0;
+static std::string g_bytes;
+static std::string g_ir_out;
+static std::string g_bc_out;
+static std::string g_slice_inputs;
+static std::string g_slice_outputs;
 
 using Memory = std::map<uint64_t, uint8_t>;
 
@@ -78,8 +89,8 @@ using Memory = std::map<uint64_t, uint8_t>;
 static Memory UnhexlifyInputBytes(uint64_t addr_mask) {
   Memory memory;
 
-  for (size_t i = 0; i < FLAGS_bytes.size(); i += 2) {
-    char nibbles[] = {FLAGS_bytes[i], FLAGS_bytes[i + 1], '\0'};
+  for (size_t i = 0; i < g_bytes.size(); i += 2) {
+    char nibbles[] = {g_bytes[i], g_bytes[i + 1], '\0'};
     char *parsed_to = nullptr;
     auto byte_val = strtol(nibbles, &parsed_to, 16);
 
@@ -89,7 +100,7 @@ static Memory UnhexlifyInputBytes(uint64_t addr_mask) {
       exit(EXIT_FAILURE);
     }
 
-    auto byte_addr = FLAGS_address + (i / 2);
+    auto byte_addr = g_address + (i / 2);
     auto masked_addr = byte_addr & addr_mask;
 
     // Make sure that if a really big number is specified for `--address`,
@@ -100,7 +111,7 @@ static Memory UnhexlifyInputBytes(uint64_t addr_mask) {
                 << "in a 32-bit overflow.";
       exit(EXIT_FAILURE);
 
-    } else if (masked_addr < FLAGS_address) {
+    } else if (masked_addr < g_address) {
       std::cerr << "Too many bytes specified to --bytes, would result "
                 << "in a 64-bit overflow.";
       exit(EXIT_FAILURE);
@@ -212,41 +223,50 @@ static void SetVersion(void) {
 
 int main(int argc, char *argv[]) {
   SetVersion();
-  google::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
 
+  // Parse command-line flags (gflags replacement)
+  g_arch = GetArgValue(argc, argv, "--arch");
+  g_os = GetArgValue(argc, argv, "--os");
+  g_address = GetUInt64Arg(argc, argv, "--address", 0);
+  g_entry_address = GetUInt64Arg(argc, argv, "--entry_address", 0);
+  g_bytes = GetArgValue(argc, argv, "--bytes");
+  g_ir_out = GetArgValue(argc, argv, "--ir_out");
+  g_bc_out = GetArgValue(argc, argv, "--bc_out");
+  g_slice_inputs = GetArgValue(argc, argv, "--slice_inputs");
+  g_slice_outputs = GetArgValue(argc, argv, "--slice_outputs");
 
-  if (FLAGS_bytes.empty()) {
+  if (g_bytes.empty()) {
     std::cerr << "Please specify a sequence of hex bytes to --bytes."
               << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (FLAGS_bytes.size() % 2) {
+  if (g_bytes.size() % 2) {
     std::cerr << "Please specify an even number of nibbles to --bytes."
               << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (!FLAGS_entry_address) {
-    FLAGS_entry_address = FLAGS_address;
+  if (!g_entry_address) {
+    g_entry_address = g_address;
   }
 
   // Make sure `--address` and `--entry_address` are in-bounds for the target
   // architecture's address size.
   llvm::LLVMContext context;
-  auto arch = remill::Arch::Get(context, FLAGS_os, FLAGS_arch);
+  auto arch = remill::Arch::Get(context, g_os, g_arch);
   const uint64_t addr_mask = ~0ULL >> (64UL - arch->address_size);
-  if (FLAGS_address != (FLAGS_address & addr_mask)) {
-    std::cerr << "Value " << std::hex << FLAGS_address
+  if (g_address != (g_address & addr_mask)) {
+    std::cerr << "Value " << std::hex << g_address
               << " passed to --address does not fit into 32-bits. Did mean"
               << " to specify a 64-bit architecture to --arch?" << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (FLAGS_entry_address != (FLAGS_entry_address & addr_mask)) {
+  if (g_entry_address != (g_entry_address & addr_mask)) {
     std::cerr
-        << "Value " << std::hex << FLAGS_entry_address
+        << "Value " << std::hex << g_entry_address
         << " passed to --entry_address does not fit into 32-bits. Did mean"
         << " to specify a 64-bit architecture to --arch?" << std::endl;
     return EXIT_FAILURE;
@@ -265,7 +285,7 @@ int main(int argc, char *argv[]) {
 
   // Lift all discoverable traces starting from `--entry_address` into
   // `module`.
-  trace_lifter.Lift(FLAGS_entry_address);
+  trace_lifter.Lift(g_entry_address);
 
   // Optimize the module, but with a particular focus on only the functions
   // that we actually lifted.
@@ -280,14 +300,14 @@ int main(int argc, char *argv[]) {
 
   llvm::Function *entry_trace = nullptr;
   const auto make_slice =
-      !FLAGS_slice_inputs.empty() || !FLAGS_slice_outputs.empty();
+      !g_slice_inputs.empty() || !g_slice_outputs.empty();
 
   // Move the lifted code into a new module. This module will be much smaller
   // because it won't be bogged down with all of the semantics definitions.
   // This is a good JITing strategy: optimize the lifted code in the semantics
   // module, move it to a new module, instrument it there, then JIT compile it.
   for (auto &lifted_entry : manager.traces) {
-    if (lifted_entry.first == FLAGS_entry_address) {
+    if (lifted_entry.first == g_entry_address) {
       entry_trace = lifted_entry.second;
     }
     remill::MoveFunctionIntoModule(lifted_entry.second, &dest_module);
@@ -308,9 +328,9 @@ int main(int argc, char *argv[]) {
 
     llvm::SmallVector<llvm::StringRef, 4> input_reg_names;
     llvm::SmallVector<llvm::StringRef, 4> output_reg_names;
-    llvm::StringRef(FLAGS_slice_inputs)
+    llvm::StringRef(g_slice_inputs)
         .split(input_reg_names, ',', -1, false /* KeepEmpty */);
-    llvm::StringRef(FLAGS_slice_outputs)
+    llvm::StringRef(g_slice_outputs)
         .split(output_reg_names, ',', -1, false /* KeepEmpty */);
 
     CHECK(!(input_reg_names.empty() && output_reg_names.empty()))
@@ -324,7 +344,7 @@ int main(int argc, char *argv[]) {
       const auto reg = arch->RegisterByName(reg_name.str());
       CHECK(reg != nullptr)
           << "Invalid register name '" << reg_name.str()
-          << "' used in input slice list '" << FLAGS_slice_inputs << "'";
+          << "' used in input slice list '" << g_slice_inputs << "'";
 
       arg_types.push_back(reg->type);
     }
@@ -336,7 +356,7 @@ int main(int argc, char *argv[]) {
       const auto reg = arch->RegisterByName(reg_name.str());
       CHECK(reg != nullptr)
           << "Invalid register name '" << reg_name.str()
-          << "' used in output slice list '" << FLAGS_slice_outputs << "'";
+          << "' used in output slice list '" << g_slice_outputs << "'";
 
       arg_types.push_back(llvm::PointerType::get(reg->type, 0));
     }
@@ -364,7 +384,7 @@ int main(int argc, char *argv[]) {
     // Store the program counter into the state.
     const auto pc_reg_ptr = pc_reg->AddressOf(state_ptr, entry);
     const auto trace_pc =
-        llvm::ConstantInt::get(pc_reg->type, FLAGS_entry_address, false);
+        llvm::ConstantInt::get(pc_reg->type, g_entry_address, false);
     ir.SetInsertPoint(entry);
     ir.CreateStore(trace_pc, pc_reg_ptr);
 
@@ -426,15 +446,15 @@ int main(int argc, char *argv[]) {
 
   int ret = EXIT_SUCCESS;
 
-  if (!FLAGS_ir_out.empty()) {
-    if (!remill::StoreModuleIRToFile(&dest_module, FLAGS_ir_out, true)) {
-      LOG(ERROR) << "Could not save LLVM IR to " << FLAGS_ir_out;
+  if (!g_ir_out.empty()) {
+    if (!remill::StoreModuleIRToFile(&dest_module, g_ir_out, true)) {
+      LOG(ERROR) << "Could not save LLVM IR to " << g_ir_out;
       ret = EXIT_FAILURE;
     }
   }
-  if (!FLAGS_bc_out.empty()) {
-    if (!remill::StoreModuleToFile(&dest_module, FLAGS_bc_out, true)) {
-      LOG(ERROR) << "Could not save LLVM bitcode to " << FLAGS_bc_out;
+  if (!g_bc_out.empty()) {
+    if (!remill::StoreModuleToFile(&dest_module, g_bc_out, true)) {
+      LOG(ERROR) << "Could not save LLVM bitcode to " << g_bc_out;
       ret = EXIT_FAILURE;
     }
   }

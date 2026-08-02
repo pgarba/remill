@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
+#include <cstring>
 #include <climits>
 #include <cstdlib>
 #include <fstream>
@@ -220,7 +222,7 @@ void ForEachFileInDirectory(const std::string &dir_name,
                             DirectoryVisitor visitor) {
   std::vector<std::string> paths;
   auto dir = opendir(dir_name.c_str());
-  CHECK(dir != nullptr) << "Could not list the " << dir_name << " directory";
+  assert(dir != nullptr);
 
   while (auto ent = readdir(dir)) {
     if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) {
@@ -251,8 +253,7 @@ bool TryCreateDirectory(const std::string &dir_name) {
 std::string CurrentWorkingDirectory(void) {
   char result[PATH_MAX] = {};
   auto res = getcwd(result, PATH_MAX);
-  CHECK(res) << "Could not determine current working directory: "
-             << strerror(errno);
+  assert(res);
   return std::string(result);
 }
 
@@ -283,8 +284,7 @@ static uint8_t gCopyData[kCopyDataSize];
 #ifdef _WIN32
 void CopyFile(const std::string &from_path, const std::string &to_path) {
   if (CopyFileA(from_path.data(), to_path.data(), false) == 0) {
-    LOG(FATAL) << "Unable to copy all data read from " << from_path << " to "
-               << to_path;
+    assert(false);
   }
 }
 
@@ -292,12 +292,10 @@ void CopyFile(const std::string &from_path, const std::string &to_path) {
 void CopyFile(const std::string &from_path, const std::string &to_path) {
   unlink(to_path.c_str());
   auto from_fd = open(from_path.c_str(), O_RDONLY);
-  CHECK(-1 != from_fd) << "Unable to open source file " << from_path
-                       << " for copying: " << strerror(errno);
+  assert(-1 != from_fd);
 
   auto to_fd = open(to_path.c_str(), O_WRONLY | O_TRUNC | O_CREAT, 0666);
-  CHECK(-1 != to_fd) << "Unable to open destination file " << to_path
-                     << " for copying: " << strerror(errno);
+  assert(-1 != to_fd);
 
   auto file_size = FileSize(from_path);
   int errno_copy = 0;
@@ -326,8 +324,7 @@ void CopyFile(const std::string &from_path, const std::string &to_path) {
 
   if (errno_copy) {
     unlink(to_path.c_str());
-    LOG(FATAL) << "Unable to copy all data read from " << from_path << " to "
-               << to_path << ": " << strerror(errno_copy);
+    assert(false);
   }
 }
 #endif

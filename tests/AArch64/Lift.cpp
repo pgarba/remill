@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/Instructions.h>
@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -46,11 +47,15 @@
 #  define SYMBOL_PREFIX ""
 #endif
 
-DEFINE_string(bc_out, "",
-              "Name of the file in which to place the generated bitcode.");
-
-DECLARE_string(arch);
-DECLARE_string(os);
+// Simple command-line argument parser to replace gflags.
+static std::string GetArgValue(int argc, char *argv[], const char *flag) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      return argv[i + 1];
+    }
+  }
+  return "";
+}
 
 namespace {
 
@@ -94,10 +99,10 @@ class TestTraceManager : public remill::TraceManager {
 }  // namespace
 
 extern "C" int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
-  google::InitGoogleLogging(argv[0]);
+  (void) argc;
+  (void) argv;
 
-  DLOG(INFO) << "Generating tests.";
+  // Generating tests.
 
   std::vector<const test::TestInfo *> tests;
   for (auto i = 0U;; ++i) {
@@ -119,7 +124,7 @@ extern "C" int main(int argc, char *argv[]) {
 
   llvm::LLVMContext context;
   auto os_name = remill::GetOSName(REMILL_OS);
-  auto arch_name = remill::GetArchName(FLAGS_arch);
+  auto arch_name = remill::GetArchName(GetArgValue(argc, argv, "--arch"));
   auto arch = remill::Arch::Build(&context, os_name, arch_name);
   auto module = remill::LoadArchSemantics(arch);
 
@@ -141,12 +146,13 @@ extern "C" int main(int argc, char *argv[]) {
     lifted_trace->setName(ss.str());
   }
 
-  DLOG(INFO) << "Serializing bitcode to " << FLAGS_bc_out;
+  auto bc_out = GetArgValue(argc, argv, "--bc_out");
+  // Serializing bitcode to bc_out.
   auto host_arch =
       remill::Arch::Build(&context, os_name, remill::GetArchName(REMILL_ARCH));
   host_arch->PrepareModule(module.get());
-  remill::StoreModuleToFile(module.get(), FLAGS_bc_out);
+  remill::StoreModuleToFile(module.get(), bc_out);
 
-  DLOG(INFO) << "Done.";
+  // Done.
   return 0;
 }

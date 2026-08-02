@@ -16,8 +16,8 @@
 
 #include "Arch.h"  // For `Arch` and `ArchImpl`.
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/AttributeMask.h>
@@ -44,18 +44,16 @@
 #include "remill/BC/Version.h"
 #include "remill/OS/OS.h"
 
-DEFINE_string(arch, REMILL_ARCH,
-              "Architecture of the code being translated. "
-              "Valid architectures: x86, amd64 (with or without "
-              "`_avx` or `_avx512` appended), aarch64, aarch32");
-
 namespace remill {
+
+const char *kArchDefault = REMILL_ARCH;
+
 namespace {
 
 static unsigned AddressSize(ArchName arch_name) {
   switch (arch_name) {
     case kArchInvalid:
-      LOG(FATAL) << "Cannot get address size for invalid arch.";
+      assert(false);
       return 0;
     case kArchX86:
     case kArchX86_AVX:
@@ -100,7 +98,7 @@ bool Arch::NextInstructionIsDelayed(const Instruction &, const Instruction &,
 llvm::Triple Arch::BasicTriple(void) const {
   llvm::Triple triple;
   switch (os_name) {
-    case kOSInvalid: LOG(FATAL) << "Cannot get triple OS."; break;
+    case kOSInvalid: assert(false); break;
 
     case kOSLinux:
       triple.setOS(llvm::Triple::Linux);
@@ -138,7 +136,7 @@ auto Arch::Build(llvm::LLVMContext *context_, OSName os_name_,
   ArchPtr ret;
   switch (arch_name_) {
     case kArchInvalid:
-      LOG(FATAL) << "Unrecognized architecture.";
+      assert(false);
       return nullptr;
 
     case kArchAArch64LittleEndian: {
@@ -226,15 +224,13 @@ auto Arch::GetHostArch(llvm::LLVMContext &ctx) -> ArchPtr {
 
 // Return the type of the state structure.
 llvm::StructType *Arch::StateStructType(void) const {
-  CHECK(impl)
-      << "Have you not run `PrepareModule` on a loaded semantics module?";
+  assert(impl);
   return impl->state_type;
 }
 
 // Pointer to a state structure type.
 llvm::PointerType *Arch::StatePointerType(void) const {
-  CHECK(impl)
-      << "Have you not run `PrepareModule` on a loaded semantics module?";
+  assert(impl);
   return llvm::PointerType::get(impl->state_type, 0);
 }
 
@@ -245,15 +241,13 @@ llvm::IntegerType *Arch::AddressType(void) const {
 
 // The type of memory.
 llvm::PointerType *Arch::MemoryPointerType(void) const {
-  CHECK(impl)
-      << "Have you not run `PrepareModule` on a loaded semantics module?";
+  assert(impl);
   return impl->memory_type;
 }
 
 // Return the type of a lifted function.
 llvm::FunctionType *Arch::LiftedFunctionType(void) const {
-  CHECK(impl)
-      << "Have you not run `PrepareModule` on a loaded semantics module?";
+  assert(impl);
   return impl->lifted_function_type;
 }
 
@@ -469,8 +463,7 @@ static uint64_t TotalOffset(const llvm::DataLayout &dl, llvm::Value *base,
       break;
 
     } else {
-      LOG(FATAL) << "Unexpected value " << LLVMThingToString(base)
-                 << " in State structure indexing chain";
+      assert(false);
       base = nullptr;
     }
   }

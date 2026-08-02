@@ -18,7 +18,7 @@
 
 #include "remill/Arch/Instruction.h"
 
-#include <glog/logging.h>
+#include "remill/BC/Logging.h"
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
 
@@ -448,11 +448,7 @@ Operand &Instruction::EmplaceOperand(const Operand::ShiftRegister &shift_op) {
         expr = EmplaceUnaryOp(llvm::Instruction::Trunc, expr, extract_type);
 
       } else {
-        CHECK(reg_size == shift_op.extract_size)
-            << "Invalid extraction size. Can't extract "
-            << shift_op.extract_size << " bits from a " << reg_size
-            << "-bit value in operand " << op.Serialize()
-            << " of instruction at " << std::hex << pc;
+        assert(reg_size == shift_op.extract_size);
       }
 
       if (op.size > shift_op.extract_size) {
@@ -466,13 +462,12 @@ Operand &Instruction::EmplaceOperand(const Operand::ShiftRegister &shift_op) {
             curr_size = op.size;
             break;
           default:
-            LOG(FATAL) << "Invalid extend operation type for instruction at "
-                       << std::hex << pc;
+            assert(false);
             break;
         }
       }
     }
-    CHECK(curr_size <= op.size);
+    assert(curr_size <= op.size);
 
     if (curr_size < op.size) {
       expr = EmplaceUnaryOp(llvm::Instruction::ZExt, expr, op_type);
@@ -577,15 +572,9 @@ Operand &Instruction::EmplaceOperand(const Operand::Address &addr_op) {
   const auto zero = llvm::ConstantInt::get(word_type, 0, false);
   const auto word_size = arch->address_size;
 
-  CHECK(word_size >= addr_op.base_reg.size)
-      << "Memory base register " << addr_op.base_reg.name
-      << "for instruction at " << std::hex << pc
-      << " is wider than the machine word size.";
+  assert(word_size >= addr_op.base_reg.size);
 
-  CHECK(word_size >= addr_op.index_reg.size)
-      << "Memory index register " << addr_op.base_reg.name
-      << "for instruction at " << std::hex << pc
-      << " is wider than the machine word size.";
+  assert(word_size >= addr_op.index_reg.size);
 
   auto reg_or_zero = [=](const Operand::Register &reg) {
     if (!reg.name.empty()) {

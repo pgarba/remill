@@ -17,8 +17,8 @@
 #define _XOPEN_SOURCE
 
 #include <dlfcn.h>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "remill/BC/Logging.h"
 #include <gtest/gtest.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -40,8 +40,15 @@
 #include "remill/Arch/Runtime/Runtime.h"
 #include "tests/AArch64/Test.h"
 
-DECLARE_string(arch);
-DECLARE_string(os);
+// Simple command-line argument parser to replace gflags.
+static std::string GetArgValue(int argc, char *argv[], const char *flag) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
+      return argv[i + 1];
+    }
+  }
+  return "";
+}
 
 namespace {
 
@@ -424,9 +431,9 @@ static void RunWithFlags(const test::TestInfo *info, NZCV flags,
                          std::string desc, uint64_t arg1, uint64_t arg2,
                          uint64_t arg3) {
 
-  DLOG(INFO) << "Testing instruction: " << info->test_name << ": " << desc;
+  // Testing instruction: info->test_name: desc
   if (sigsetjmp(gUnsupportedInstrBuf, true)) {
-    DLOG(INFO) << "Unsupported instruction " << info->test_name;
+    // Unsupported instruction
     return;
   }
 
@@ -504,7 +511,6 @@ static void RunWithFlags(const test::TestInfo *info, NZCV flags,
   lifted_state->fpsr.flat = 0;
 
   if (gLiftedState != gNativeState) {
-    LOG(ERROR) << "States did not match for " << desc;
     EXPECT_TRUE(!"Lifted and native states did not match.");
 
 #define DIFF(name, a) EXPECT_EQ(lifted_state->a, native_state->a)
@@ -556,19 +562,18 @@ static void RunWithFlags(const test::TestInfo *info, NZCV flags,
     auto native_state_bytes = reinterpret_cast<uint8_t *>(native_state);
 
     for (size_t i = 0; i < sizeof(State); ++i) {
-      LOG_IF(ERROR, lifted_state_bytes[i] != native_state_bytes[i])
-          << "Bytes at offset " << i << " are different";
+      (void) lifted_state_bytes;
+      (void) native_state_bytes;
+      (void) i;
     }
   }
 
   if (gLiftedStack != gNativeStack) {
-    LOG(ERROR) << "Stacks did not match for " << desc;
+    // Stacks did not match for desc
 
     for (size_t i = 0; i < sizeof(gLiftedStack.bytes); ++i) {
       if (gLiftedStack.bytes[i] != gNativeStack.bytes[i]) {
-        LOG(ERROR) << "Lifted stack at 0x" << std::hex
-                   << reinterpret_cast<uintptr_t>(&(gLiftedStack.bytes[i]))
-                   << " does not match native stack at 0x" << std::hex
+        // Lifted stack does not match native stack
                    << reinterpret_cast<uintptr_t>(&(gNativeStack.bytes[i]))
                    << std::endl;
       }
@@ -628,7 +633,7 @@ static void RecoverFromError(int sig_num, siginfo_t *, void *context_) {
     (void) context;
     (void) native_state;
     (void) gpr;
-    LOG(FATAL) << "Implement apple signal handler.";
+    assert(0 && "Implement apple signal handler.");
 #else
 
     // `mcontext_t` is actually a `struct sigcontext`, defined as:
@@ -730,9 +735,6 @@ static void SetupSignals(void) {
 }
 
 int main(int argc, char **argv) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
-  google::InitGoogleLogging(argv[0]);
-
   auto this_exe = dlopen(nullptr, RTLD_NOW);
 
   // Populate the tests vector.
