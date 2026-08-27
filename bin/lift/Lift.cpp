@@ -81,6 +81,7 @@ static std::string g_ir_out;
 static std::string g_bc_out;
 static std::string g_slice_inputs;
 static std::string g_slice_outputs;
+static bool g_flat = false;
 
 using Memory = std::map<uint64_t, uint8_t>;
 
@@ -235,6 +236,11 @@ int main(int argc, char *argv[]) {
   g_bc_out = GetArgValue(argc, argv, "--bc_out");
   g_slice_inputs = GetArgValue(argc, argv, "--slice_inputs");
   g_slice_outputs = GetArgValue(argc, argv, "--slice_outputs");
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--flat") == 0) {
+      g_flat = true;
+    }
+  }
 
   if (g_bytes.empty()) {
     std::cerr << "Please specify a sequence of hex bytes to --bytes."
@@ -281,7 +287,7 @@ int main(int argc, char *argv[]) {
   SimpleTraceManager manager(memory);
   remill::IntrinsicTable intrinsics(module);
   remill::InstructionLifter inst_lifter(arch, intrinsics);
-  remill::TraceLifter trace_lifter(inst_lifter, manager);
+  remill::TraceLifter trace_lifter(inst_lifter, manager, g_flat);
 
   // Lift all discoverable traces starting from `--entry_address` into
   // `module`.
@@ -291,6 +297,15 @@ int main(int argc, char *argv[]) {
   // that we actually lifted.
   remill::OptimizationGuide guide = {};
   remill::OptimizeModule(arch, module, manager.traces, guide);
+
+  // In flat mode, run SROA to scalarize the STATE_LOCAL alloca.
+  // This eliminates the local State struct and replaces it with individual
+  // register values, producing much smaller IR.
+  if (g_flat) {
+    for (auto &trace : manager.traces) {
+      remill::ScalarizeFlatFunction(module.get(), trace.second);
+    }
+  }
 
   // Create a new module in which we will move all the lifted functions. Prepare
   // the module for code of this architecture, i.e. set the data layout, triple,

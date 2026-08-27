@@ -77,10 +77,6 @@ set(REMILL_LLVM_VERSION "${LLVM_MAJOR_VERSION}")
 message("Remill llvm version: ${REMILL_LLVM_VERSION}")
 set(REMILL_INSTALL_SEMANTICS_DIR "${CMAKE_INSTALL_PREFIX}/${REMILL_INSTALL_SHARE_DIR}/remill/${REMILL_LLVM_VERSION}/semantics" CACHE PATH "Directory into which semantics are installed")
 set(REMILL_BUILD_SEMANTICS_DIR_X86 "${CMAKE_CURRENT_BINARY_DIR}/lib/Arch/X86/Runtime")
-set(REMILL_BUILD_SEMANTICS_DIR_AARCH32 "${CMAKE_CURRENT_BINARY_DIR}/lib/Arch/AArch32/Runtime")
-set(REMILL_BUILD_SEMANTICS_DIR_AARCH64 "${CMAKE_CURRENT_BINARY_DIR}/lib/Arch/AArch64/Runtime")
-set(REMILL_BUILD_SEMANTICS_DIR_SPARC32 "${CMAKE_CURRENT_BINARY_DIR}/lib/Arch/SPARC32/Runtime")
-set(REMILL_BUILD_SEMANTICS_DIR_SPARC64 "${CMAKE_CURRENT_BINARY_DIR}/lib/Arch/SPARC64/Runtime")
 set(REMILL_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set(REMILL_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 
@@ -156,7 +152,6 @@ endif()
 # Configuration options for semantics
 #
 option(REMILL_BARRIER_AS_NOP "Remove compiler barriers (inline assembly) in semantics" OFF)
-option(REMILL_BUILD_SPARC32_RUNTIME "Build the Runtime for SPARC32. Turn this off if you have include errors with <bits/c++config.h>, or read the README for a fix" ON)
 
 #
 # target settings
@@ -250,10 +245,6 @@ endif()
 target_compile_definitions(remill_settings INTERFACE
   "REMILL_INSTALL_SEMANTICS_DIR=\"${REMILL_INSTALL_SEMANTICS_DIR}\""
   "REMILL_BUILD_SEMANTICS_DIR_X86=\"${REMILL_BUILD_SEMANTICS_DIR_X86}\""
-  "REMILL_BUILD_SEMANTICS_DIR_AARCH32=\"${REMILL_BUILD_SEMANTICS_DIR_AARCH32}\""
-  "REMILL_BUILD_SEMANTICS_DIR_AARCH64=\"${REMILL_BUILD_SEMANTICS_DIR_AARCH64}\""
-  "REMILL_BUILD_SEMANTICS_DIR_SPARC32=\"${REMILL_BUILD_SEMANTICS_DIR_SPARC32}\""
-  "REMILL_BUILD_SEMANTICS_DIR_SPARC64=\"${REMILL_BUILD_SEMANTICS_DIR_SPARC64}\""
 )
 
 set(THIRDPARTY_LIBRARY_LIST thirdparty_llvm thirdparty_xed)
@@ -314,6 +305,7 @@ add_custom_target(semantics)
 
 # tools
 add_subdirectory(bin)
+add_subdirectory(tools/flat-gen)
 
 if(REMILL_ENABLE_INSTALL_TARGET)
   install(TARGETS remill EXPORT remillTargets)
@@ -356,8 +348,4 @@ if (REMILL_ENABLE_TESTING)
     add_subdirectory(tests/X86)
   endif()
 
-  if(REMILL_ENABLE_TESTING_AARCH64)
-    message(STATUS "aarch64 tests enabled")
-    add_subdirectory(tests/AArch64)
-  endif()
 endif()

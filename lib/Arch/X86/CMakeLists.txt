@@ -24,6 +24,7 @@ add_library(remill_arch_x86 STATIC
   "${REMILL_INCLUDE_DIR}/remill/Arch/X86/Runtime/Operators.h"
   "${REMILL_INCLUDE_DIR}/remill/Arch/X86/Runtime/State.h"
   "${REMILL_INCLUDE_DIR}/remill/Arch/X86/Runtime/Types.h"
+  "${REMILL_INCLUDE_DIR}/remill/Arch/X86/Runtime/FlatState.h"
 
   Arch.cpp
   XED.h

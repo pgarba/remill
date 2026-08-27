@@ -74,9 +74,41 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &inst,
                                             llvm::BasicBlock *block,
                                             bool is_delayed,
                                             llvm::CallInst **CIInstruction) {
-  return LiftIntoBlock(inst, block,
-                       NthArgument(block->getParent(), kStatePointerArgNum),
+  return LiftIntoBlock(inst, block, GetStatePointer(block->getParent()),
                        is_delayed, CIInstruction);
+}
+
+// Return the state pointer for `func`.
+//
+// In flat mode the ISEL code operates on a local `State` alloca (named
+// `STATE_LOCAL`) that the entry block materializes from the caller's flat
+// state; passing that alloca directly lets `LoadRegAddress` place the register
+// GEPs before it (so they dominate every use). In the classic ABI there is no
+// such alloca, so we fall back to the `state` argument, which is available in
+// every block.
+llvm::Value *InstructionLifter::GetStatePointer(llvm::Function *func) const {
+  if (func != impl->last_func) {
+    impl->reg_ptr_cache.clear();
+    impl->state_ptr = nullptr;
+    impl->last_func = func;
+  }
+
+  if (!impl->state_ptr) {
+    // Look for the flat-mode local `State` alloca in the entry block.
+    for (auto &inst : func->getEntryBlock()) {
+      if (auto alloca = llvm::dyn_cast<llvm::AllocaInst>(&inst)) {
+        if (alloca->getName() == "STATE_LOCAL") {
+          impl->state_ptr = alloca;
+          break;
+        }
+      }
+    }
+    if (!impl->state_ptr) {
+      impl->state_ptr = NthArgument(func, kStatePointerArgNum);
+    }
+  }
+
+  return impl->state_ptr;
 }
 
 // Lift a single instruction into a basic block.
@@ -235,6 +267,7 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
   // Invalidate the cache.
   if (func != impl->last_func) {
     impl->reg_ptr_cache.clear();
+    impl->state_ptr = nullptr;
     impl->last_func = func;
 
     CHECK_EQ(func->getParent(), impl->module);
@@ -271,10 +304,16 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
       llvm::IRBuilder<> ir(&target_block, target_block.getFirstInsertionPt());
       reg_ptr = reg->AddressOf(state_ptr, ir);
 
-      // The state pointer is an instruction, likely an `AllocaInst`.
+      // The state pointer is an instruction, likely an `AllocaInst` (the
+      // flat-mode local `State`) or a load. The GEPs must come *after* it so
+      // that it dominates them.
     } else if (auto state_inst = llvm::dyn_cast<llvm::Instruction>(state_ptr);
                state_inst) {
-      llvm::IRBuilder<> ir(state_inst);
+      auto *insert_before = state_inst->getNextNode();
+      if (!insert_before) {
+        insert_before = state_inst->getParent()->getTerminator();
+      }
+      llvm::IRBuilder<> ir(insert_before);
       reg_ptr = reg->AddressOf(state_ptr, ir);
 
       // The state pointer is a constant, likely an `llvm::GlobalVariable`.
@@ -321,6 +360,7 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
 // Clear out the cache of the current register values/addresses loaded.
 void InstructionLifter::ClearCache(void) const {
   impl->reg_ptr_cache.clear();
+  impl->state_ptr = nullptr;
   impl->last_func = nullptr;
 }
 

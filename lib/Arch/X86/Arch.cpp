@@ -44,6 +44,7 @@
 #define ADDRESS_SIZE_BITS 64
 #define INCLUDED_FROM_REMILL
 #include "remill/Arch/X86/Runtime/State.h"
+#include "remill/Arch/X86/Runtime/FlatState.h"
 
 // clang-format on
 
@@ -815,6 +816,11 @@ class X86Arch final : public Arch {
   // specific variables.
   void FinishLiftedFunctionInitialization(
       llvm::Module *module, llvm::Function *bb_func) const final;
+
+  // Flat-mode support: `Memory *F(addr_t pc, Memory *memory, X86FlatState *)`.
+  llvm::FunctionType *FlatLiftedFunctionType(void) const final;
+  void InitializeFlatLiftedFunction(llvm::Function *func) const final;
+  void FinishFlatLiftedFunctionImpl(llvm::Function *func) const final;
 
  private:
   X86Arch(void) = delete;
@@ -1752,6 +1758,178 @@ void X86Arch::FinishLiftedFunctionInitialization(
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "SSBASE"));
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "ESBASE"));
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "DSBASE"));
+  }
+}
+
+// The flat-mode lifted function type:
+//   Memory *F(addr_t pc, Memory *memory, X86FlatState *state)
+// The canonical flat-register order. Each entry is (name, value-type).
+// The name is used for the argument's debug name; the value-type is the type
+// of the register's *value* (the argument itself is a pointer to it).
+struct FlatReg {
+  llvm::StringRef name;
+  llvm::Type *type;
+};
+
+static const FlatReg kFlatRegs[] = {
+    // 17 GPRs.
+    {"rax", nullptr}, {"rbx", nullptr}, {"rcx", nullptr}, {"rdx", nullptr},
+    {"rsi", nullptr}, {"rdi", nullptr}, {"rsp", nullptr}, {"rbp", nullptr},
+    {"r8", nullptr},  {"r9", nullptr},  {"r10", nullptr}, {"r11", nullptr},
+    {"r12", nullptr}, {"r13", nullptr}, {"r14", nullptr}, {"r15", nullptr},
+    {"rip", nullptr},
+    // 3 segment bases.
+    {"ss_base", nullptr}, {"gs_base", nullptr}, {"cs_base", nullptr},
+    // 7 flags.
+    {"cf", nullptr}, {"pf", nullptr}, {"af", nullptr}, {"zf", nullptr},
+    {"sf", nullptr}, {"df", nullptr}, {"of", nullptr},
+    // 8 MMX.
+    {"mm0", nullptr}, {"mm1", nullptr}, {"mm2", nullptr}, {"mm3", nullptr},
+    {"mm4", nullptr}, {"mm5", nullptr}, {"mm6", nullptr}, {"mm7", nullptr},
+    // 16 XMM.
+    {"xmm0", nullptr},  {"xmm1", nullptr},  {"xmm2", nullptr},
+    {"xmm3", nullptr},  {"xmm4", nullptr},  {"xmm5", nullptr},
+    {"xmm6", nullptr},  {"xmm7", nullptr},  {"xmm8", nullptr},
+    {"xmm9", nullptr},  {"xmm10", nullptr}, {"xmm11", nullptr},
+    {"xmm12", nullptr}, {"xmm13", nullptr}, {"xmm14", nullptr},
+    {"xmm15", nullptr},
+};
+static_assert(sizeof(kFlatRegs) / sizeof(kFlatRegs[0]) == kFlatNumRegs,
+              "kFlatRegs must match kFlatNumRegs");
+
+llvm::FunctionType *X86Arch::FlatLiftedFunctionType(void) const {
+  auto &context = impl->memory_type->getContext();
+  auto addr = llvm::Type::getIntNTy(context, address_size);
+  auto ptr = llvm::PointerType::get(context, 0);
+
+  // Build the argument list: pc, memory, then one pointer per register.
+  llvm::SmallVector<llvm::Type *, 64> args;
+  args.push_back(addr);            // pc
+  args.push_back(impl->memory_type);  // memory
+  for (size_t i = 0; i < kFlatNumRegs; ++i) {
+    args.push_back(ptr);  // every register is a pointer (opaque in LLVM 21).
+  }
+  return llvm::FunctionType::get(impl->memory_type, args, false);
+}
+
+// Set up the flat-mode entry block: materialize a local `State` from the
+// caller's individual register pointers and install the standard variables.
+// The local `State` is what the (unchanged) `State &`-based ISEL code operates
+// on; SROA promotes it to SSA values because its only uses are the inlined
+// field loads/stores and the inlined ISEL calls.
+void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func) const {
+  auto module = func->getParent();
+  auto &context = module->getContext();
+  auto block = llvm::BasicBlock::Create(context, "", func);
+  auto addr = llvm::Type::getIntNTy(context, address_size);
+  auto zero_addr_val = llvm::Constant::getNullValue(addr);
+
+  const auto pc = remill::NthArgument(func, kFlatPCArgNum);
+  const auto memory = remill::NthArgument(func, kFlatMemoryPointerArgNum);
+
+  llvm::IRBuilder<> ir(block);
+  ir.CreateAlloca(addr, nullptr, "RETURN_PC");
+  ir.CreateAlloca(addr, nullptr, "MONITOR");
+
+  // Local `State` storage. This is the object the ISEL code reads/writes.
+  auto local_state = ir.CreateAlloca(impl->state_type, nullptr, "STATE_LOCAL");
+
+  // Entry-side mapping: call the always_inline helper to read all registers
+  // from their pointers into the local `State`. The helper is inlined, so the
+  // local `State` pointer never escapes to a non-inlined function, which
+  // would defeat SROA.
+  auto load_func = module->getFunction("__remill_flat_state_load");
+  CHECK(load_func) << "Missing __remill_flat_state_load in module";
+  llvm::SmallVector<llvm::Value *, 64> load_args;
+  load_args.push_back(local_state);
+  for (size_t i = 0; i < kFlatNumRegs; ++i) {
+    load_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+  }
+  ir.CreateCall(load_func, load_args);
+
+  // NOTE: We deliberately do NOT create a STATE pointer alloca or store
+  // local_state into it. Doing so would make local_state "address-taken",
+  // which prevents SROA from scalarizing it. Instead, LoadStatePointer()
+  // finds the STATE_LOCAL alloca by name, and FinishFlatLiftedFunctionImpl
+  // uses it directly in the tail call and store helper.
+  ir.CreateStore(memory, ir.CreateAlloca(impl->memory_type, nullptr, "MEMORY"));
+
+  // `NEXT_PC` and the segment-base variables, mirroring the non-flat path.
+  ir.CreateStore(pc, ir.CreateAlloca(addr, nullptr, "NEXT_PC"));
+  (void) this->RegisterByName("PC")->AddressOf(local_state, ir);
+  (void) this->RegisterByName("BRANCH_TAKEN")->AddressOf(local_state, ir);
+  ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "CSBASE"));
+  if (64 == address_size) {
+    ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "SSBASE"));
+    ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "ESBASE"));
+    ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "DSBASE"));
+  }
+}
+
+// Exit-side mapping: before each terminating tail call, write the final local
+// `State` back through the caller's individual register pointers.
+void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func) const {
+  auto module = func->getParent();
+
+  // Find the STATE_LOCAL alloca directly. We do NOT use the STATE variable
+  // because storing the alloca pointer into a STATE pointer alloca would make
+  // it "address-taken", preventing SROA from scalarizing it.
+  llvm::AllocaInst *local_state = nullptr;
+  for (auto &inst : func->getEntryBlock()) {
+    if (auto alloca = llvm::dyn_cast<llvm::AllocaInst>(&inst)) {
+      if (alloca->getName() == "STATE_LOCAL") {
+        local_state = alloca;
+        break;
+      }
+    }
+  }
+  CHECK(local_state) << "Missing STATE_LOCAL alloca in flat function "
+                     << func->getName().str();
+
+  // The flat jump reuses the lifted function's register pointer arguments
+  // directly (no `State*` rebuild). Look it up once.
+  auto flat_jump = module->getFunction("__remill_flat_jump");
+  CHECK(flat_jump) << "Missing __remill_flat_jump in module";
+
+  for (auto &block : *func) {
+    auto &last = block.back();
+    auto ret = llvm::dyn_cast<llvm::ReturnInst>(&last);
+    if (!ret) {
+      continue;
+    }
+    auto call = llvm::dyn_cast_or_null<llvm::CallInst>(ret->getReturnValue());
+    if (!call || !call->isTailCall()) {
+      continue;
+    }
+
+    llvm::IRBuilder<> ir(call);
+
+    // Exit-side mapping: write all registers from the local `State` back to
+    // their pointers, so the pointers (which the jump reuses) hold the final
+    // values.
+    auto store_func = module->getFunction("__remill_flat_state_store");
+    CHECK(store_func) << "Missing __remill_flat_state_store in module";
+    llvm::SmallVector<llvm::Value *, 64> store_args;
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      store_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+    }
+    store_args.push_back(local_state);
+    ir.CreateCall(store_func, store_args);
+
+    // Retarget the tail call to `__remill_flat_jump`, passing the register
+    // pointer arguments directly (plus pc and memory). This avoids rebuilding
+    // a `State` struct (51 loads) at the block boundary: the jump reads the
+    // final values through the same pointers the function was called with.
+    llvm::SmallVector<llvm::Value *, 64> jump_args;
+    jump_args.push_back(remill::NthArgument(func, kFlatPCArgNum));
+    jump_args.push_back(remill::NthArgument(func, kFlatMemoryPointerArgNum));
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      jump_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+    }
+    auto new_call = ir.CreateCall(flat_jump, jump_args);
+    new_call->setTailCall(true);
+    ret->setOperand(0, new_call);
+    call->eraseFromParent();
   }
 }
 

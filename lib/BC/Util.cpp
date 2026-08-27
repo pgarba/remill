@@ -39,9 +39,16 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/OptimizationLevel.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 
 #include "remill/Arch/Arch.h"
 #include "remill/Arch/Name.h"
@@ -243,6 +250,21 @@ FindVarInFunction(llvm::Function *function, std::string_view name_,
 
 // Find the machine state pointer.
 llvm::Value *LoadStatePointer(llvm::Function *function) {
+  if (kNumFlatBlockArgs == function->arg_size()) {
+    // Flat mode: the state is the local `State` alloca in the entry block.
+    auto &entry = function->getEntryBlock();
+    for (auto &inst : entry) {
+      if (auto alloca = llvm::dyn_cast<llvm::AllocaInst>(&inst)) {
+        if (alloca->getName() == "STATE_LOCAL") {
+          return alloca;
+        }
+      }
+    }
+    CHECK(false) << "Missing STATE_LOCAL alloca in flat function "
+                 << function->getName().str();
+    return nullptr;
+  }
+
   CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
@@ -256,6 +278,10 @@ llvm::Value *LoadStatePointer(llvm::Function *function) {
 
 // Return the memory pointer argument.
 llvm::Value *LoadMemoryPointerArg(llvm::Function *function) {
+  if (kNumFlatBlockArgs == function->arg_size()) {
+    return NthArgument(function, kFlatMemoryPointerArgNum);
+  }
+
   CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
@@ -269,6 +295,10 @@ llvm::Value *LoadMemoryPointerArg(llvm::Function *function) {
 
 // Return the program counter argument.
 llvm::Value *LoadProgramCounterArg(llvm::Function *function) {
+  if (kNumFlatBlockArgs == function->arg_size()) {
+    return NthArgument(function, kFlatPCArgNum);
+  }
+
   CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
@@ -515,30 +545,6 @@ namespace {
 #  define REMILL_BUILD_SEMANTICS_DIR_X86
 #endif  // REMILL_BUILD_SEMANTICS_DIR_X86
 
-#ifndef REMILL_BUILD_SEMANTICS_DIR_AARCH32
-#  error \
-      "Macro `REMILL_BUILD_SEMANTICS_DIR_AARCH32` must be defined to support AArch64 architecture."
-#  define REMILL_BUILD_SEMANTICS_DIR_AARCH32
-#endif  // REMILL_BUILD_SEMANTICS_DIR_AARCH32
-
-#ifndef REMILL_BUILD_SEMANTICS_DIR_AARCH64
-#  error \
-      "Macro `REMILL_BUILD_SEMANTICS_DIR_AARCH64` must be defined to support AArch64 architecture."
-#  define REMILL_BUILD_SEMANTICS_DIR_AARCH64
-#endif  // REMILL_BUILD_SEMANTICS_DIR_AARCH64
-
-#ifndef REMILL_BUILD_SEMANTICS_DIR_SPARC32
-#  error \
-      "Macro `REMILL_BUILD_SEMANTICS_DIR_SPARC32` must be defined to support the SPARC32 architectures."
-#  define REMILL_BUILD_SEMANTICS_DIR_SPARC32
-#endif  // REMILL_BUILD_SEMANTICS_DIR_SPARC32
-
-#ifndef REMILL_BUILD_SEMANTICS_DIR_SPARC64
-#  error \
-      "Macro `REMILL_BUILD_SEMANTICS_DIR_SPARC64` must be defined to support the SPARC64 architectures."
-#  define REMILL_BUILD_SEMANTICS_DIR_SPARC64
-#endif  // REMILL_BUILD_SEMANTICS_DIR_SPARC64
-
 #ifndef REMILL_INSTALL_SEMANTICS_DIR
 #  error "Macro `REMILL_INSTALL_SEMANTICS_DIR` must be defined."
 #  define REMILL_INSTALL_SEMANTICS_DIR
@@ -552,10 +558,6 @@ static const char *gSemanticsSearchPaths[] = {
 
     // Derived from the build.
     REMILL_BUILD_SEMANTICS_DIR_X86 "\0",
-    REMILL_BUILD_SEMANTICS_DIR_AARCH32 "\0",
-    REMILL_BUILD_SEMANTICS_DIR_AARCH64 "\0",
-    REMILL_BUILD_SEMANTICS_DIR_SPARC32 "\0",
-    REMILL_BUILD_SEMANTICS_DIR_SPARC64 "\0",
     REMILL_INSTALL_SEMANTICS_DIR "\0",
     "/usr/local/share/remill/" MAJOR_MINOR "/semantics",
     "/usr/share/remill/" MAJOR_MINOR "/semantics",
@@ -2264,6 +2266,51 @@ StripAndAccumulateConstantOffsets(const llvm::DataLayout &dl,
     }
   }
   return {base, total_offset};
+}
+
+// Scalarize a flat-lifted function in-place: run the inliner, mem2reg, and
+// SROA (via the new pass manager, in-process) to eliminate the STATE_LOCAL
+// alloca (the local `State` struct) that flat lifting materializes.
+//
+// We deliberately do NOT use the full O2 pipeline: it requires a
+// TargetMachine and, with some bundled libLLVM builds, the PassBuilder ABI
+// mismatch causes a segfault. A minimal pipeline (inliner + mem2reg + SROA)
+// with a null TargetMachine is sufficient to scalarize the local `State` and
+// is safe to run in-process.
+llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
+                                      llvm::Function *func) {
+  if (!module || !func) {
+    return nullptr;
+  }
+
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cgam;
+  llvm::ModuleAnalysisManager mam;
+  llvm::PassBuilder pb(/*TM=*/nullptr, llvm::PipelineTuningOptions(),
+                       std::nullopt, /*PIC=*/nullptr);
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cgam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+  llvm::ModulePassManager mpm;
+  // Inline the always_inline helpers (e.g. __remill_flat_state_load/store) so
+  // the local `State` pointer never escapes to a non-inlined function.
+  mpm.addPass(pb.buildInlinerPipeline(llvm::OptimizationLevel::O2,
+                                      llvm::ThinOrFullLTOPhase::None));
+  // mem2reg + SROA are function passes; run them per-function.
+  llvm::FunctionPassManager fpm;
+  fpm.addPass(llvm::PromotePass());  // mem2reg
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+
+  mpm.run(*module, mam);
+
+  // The function may have been renamed or (rarely) eliminated; re-look it up
+  // by its original name.
+  return module->getFunction(func->getName());
 }
 
 }  // namespace remill

@@ -74,6 +74,11 @@ class InstructionLifter::Impl {
   std::unordered_map<std::string, std::pair<llvm::Value *, llvm::Type *>>
       reg_ptr_cache;
 
+  // Cached load of the `STATE` variable for `last_func`. This is the state
+  // pointer the ISEL code operates on: the `state` argument in the classic
+  // ABI, or the local `State` alloca in flat mode.
+  llvm::Value *state_ptr{nullptr};
+
   // The function into which we're lifting. If This gets out of date, we
   // clear out `reg_ptr_cache`.
   llvm::Function *last_func{nullptr};

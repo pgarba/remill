@@ -57,14 +57,10 @@ static unsigned AddressSize(ArchName arch_name) {
       return 0;
     case kArchX86:
     case kArchX86_AVX:
-    case kArchX86_AVX512:
-    case kArchAArch32LittleEndian:
-    case kArchSparc32: return 32;
+    case kArchX86_AVX512: return 32;
     case kArchAMD64:
     case kArchAMD64_AVX:
-    case kArchAMD64_AVX512:
-    case kArchAArch64LittleEndian:
-    case kArchSparc64: return 64;
+    case kArchAMD64_AVX512: return 64;
   }
   return 0;
 }
@@ -139,18 +135,6 @@ auto Arch::Build(llvm::LLVMContext *context_, OSName os_name_,
       assert(false);
       return nullptr;
 
-    case kArchAArch64LittleEndian: {
-      DLOG(INFO) << "Using architecture: AArch64, feature set: Little Endian";
-      ret = GetAArch64(context_, os_name_, arch_name_);
-      break;
-    }
-
-    case kArchAArch32LittleEndian: {
-      DLOG(INFO) << "Using architecture: AArch32, feature set: Little Endian";
-      ret = GetAArch32(context_, os_name_, arch_name_);
-      break;
-    }
-
     case kArchX86: {
       DLOG(INFO) << "Using architecture: X86";
       ret = GetX86(context_, os_name_, arch_name_);
@@ -187,17 +171,13 @@ auto Arch::Build(llvm::LLVMContext *context_, OSName os_name_,
       break;
     }
 
-    case kArchSparc32: {
-      DLOG(INFO) << "Using architecture: 32-bit SPARC";
-      ret = GetSPARC(context_, os_name_, arch_name_);
-      break;
-    }
-
-    case kArchSparc64: {
-      DLOG(INFO) << "Using architecture: 64-bit SPARC";
-      ret = GetSPARC64(context_, os_name_, arch_name_);
-      break;
-    }
+    case kArchAArch32LittleEndian:
+    case kArchAArch64LittleEndian:
+    case kArchSparc32:
+    case kArchSparc64:
+      LOG(ERROR) << "Architecture " << GetArchName(arch_name_)
+                 << " is not supported in this x86-only build of Remill.";
+      return nullptr;
   }
 
   if (ret) {
@@ -340,22 +320,6 @@ bool Arch::IsAMD64(void) const {
     case remill::kArchAMD64_AVX512: return true;
     default: return false;
   }
-}
-
-bool Arch::IsAArch32(void) const {
-  return remill::kArchAArch32LittleEndian == arch_name;
-}
-
-bool Arch::IsAArch64(void) const {
-  return remill::kArchAArch64LittleEndian == arch_name;
-}
-
-bool Arch::IsSPARC32(void) const {
-  return remill::kArchSparc32 == arch_name;
-}
-
-bool Arch::IsSPARC64(void) const {
-  return remill::kArchSparc64 == arch_name;
 }
 
 bool Arch::IsWindows(void) const {
@@ -642,23 +606,46 @@ void Arch::PrepareModuleDataLayout(llvm::Module *mod) const {
 // NOTE(pag): This should be called after `PrepareModule` and after the
 //            semantics have been loaded.
 llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
-                                            llvm::Module *module) const {
+                                            llvm::Module *module,
+                                            bool flat) const {
   auto &context = module->getContext();
-  auto func_type = llvm::dyn_cast<llvm::FunctionType>(
-      RecontextualizeType(LiftedFunctionType(), context));
+  llvm::FunctionType *func_type;
+  if (flat) {
+    func_type = llvm::dyn_cast<llvm::FunctionType>(
+        RecontextualizeType(FlatLiftedFunctionType(), context));
+    CHECK(func_type) << "Architecture does not support flat lifting";
+  } else {
+    func_type = llvm::dyn_cast<llvm::FunctionType>(
+        RecontextualizeType(LiftedFunctionType(), context));
+  }
   llvm::StringRef name(name_.data(), name_.size());
   auto func = llvm::Function::Create(
       func_type, llvm::GlobalValue::ExternalLinkage, 0u, name, module);
 
-  auto memory = remill::NthArgument(func, kMemoryPointerArgNum);
-  auto state = remill::NthArgument(func, kStatePointerArgNum);
-  auto pc = remill::NthArgument(func, kPCArgNum);
-  memory->setName("memory");
-  state->setName("state");
-  pc->setName("program_counter");
+  if (flat) {
+    auto memory = remill::NthArgument(func, kFlatMemoryPointerArgNum);
+    auto pc = remill::NthArgument(func, kFlatPCArgNum);
+    memory->setName("memory");
+    pc->setName("program_counter");
 
-  AddNoAliasToArgument(state);
-  AddNoAliasToArgument(memory);
+    // Name each register argument and add noalias.
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      auto reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
+      reg_arg->setName("reg_" + std::to_string(i));
+      AddNoAliasToArgument(reg_arg);
+    }
+    AddNoAliasToArgument(memory);
+  } else {
+    auto memory = remill::NthArgument(func, kMemoryPointerArgNum);
+    auto state = remill::NthArgument(func, kStatePointerArgNum);
+    auto pc = remill::NthArgument(func, kPCArgNum);
+    memory->setName("memory");
+    state->setName("state");
+    pc->setName("program_counter");
+
+    AddNoAliasToArgument(state);
+    AddNoAliasToArgument(memory);
+  }
 
   return func;
 }
@@ -668,17 +655,23 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
 // NOTE(pag): This should be called after `PrepareModule` and after the
 //            semantics have been loaded.
 llvm::Function *Arch::DefineLiftedFunction(std::string_view name_,
-                                           llvm::Module *module) const {
-  auto func = DeclareLiftedFunction(name_, module);
-  InitializeEmptyLiftedFunction(func);
+                                           llvm::Module *module,
+                                           bool flat) const {
+  auto func = DeclareLiftedFunction(name_, module, flat);
+  InitializeEmptyLiftedFunction(func, flat);
   InitFunctionAttributes(func);
   return func;
 }
 
 // Initialize an empty lifted function with the default variables that it
 // should contain.
-void Arch::InitializeEmptyLiftedFunction(llvm::Function *func) const {
+void Arch::InitializeEmptyLiftedFunction(llvm::Function *func,
+                                         bool flat) const {
   CHECK(func->isDeclaration());
+  if (flat) {
+    InitializeFlatLiftedFunction(func);
+    return;
+  }
   auto module = func->getParent();
   auto &context = module->getContext();
   auto block = llvm::BasicBlock::Create(context, "", func);
@@ -704,6 +697,20 @@ void Arch::InitializeEmptyLiftedFunction(llvm::Function *func) const {
   FinishLiftedFunctionInitialization(module, func);
   CHECK(BlockHasSpecialVars(func));
 }
+
+// Finalize a flat-mode lifted function: insert the state write-back before
+// each terminating tail call.
+void Arch::FinishFlatLiftedFunction(llvm::Function *func) const {
+  FinishFlatLiftedFunctionImpl(func);
+}
+
+// Base implementations of the flat-mode hooks. Architectures that do not
+// support flat lifting leave these as no-ops / nullptr.
+llvm::FunctionType *Arch::FlatLiftedFunctionType(void) const {
+  return nullptr;
+}
+void Arch::InitializeFlatLiftedFunction(llvm::Function *) const {}
+void Arch::FinishFlatLiftedFunctionImpl(llvm::Function *) const {}
 
 void Arch::PrepareModule(llvm::Module *mod) const {
   PrepareModuleDataLayout(mod);

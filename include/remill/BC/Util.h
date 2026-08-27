@@ -281,4 +281,15 @@ std::pair<llvm::Value *, int64_t>
 StripAndAccumulateConstantOffsets(const llvm::DataLayout &dl,
                                   llvm::Value *base);
 
+// Scalarize a flat-lifted function in-place: run the inliner, mem2reg, and
+// SROA (via the new pass manager, in-process) to eliminate the STATE_LOCAL
+// alloca (the local `State` struct) that flat lifting materializes. The
+// function's signature (the flat ABI: pc, memory, reg_0..reg_N) is unchanged;
+// only the body is scalarized, so the result is a flat function that operates
+// directly on the register pointer arguments with no state struct.
+//
+// Returns the (modified) function, or nullptr if it was eliminated.
+llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
+                                      llvm::Function *func);
+
 }  // namespace remill

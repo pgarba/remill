@@ -87,10 +87,12 @@ class TraceLifter {
  public:
   ~TraceLifter(void);
 
-  inline TraceLifter(InstructionLifter &inst_lifter_, TraceManager &manager_)
-      : TraceLifter(&inst_lifter_, &manager_) {}
+  inline TraceLifter(InstructionLifter &inst_lifter_, TraceManager &manager_,
+                     bool flat = false)
+      : TraceLifter(&inst_lifter_, &manager_, flat) {}
 
-  TraceLifter(InstructionLifter *inst_lifter_, TraceManager *manager_);
+  TraceLifter(InstructionLifter *inst_lifter_, TraceManager *manager_,
+              bool flat = false);
 
   static void NullCallback(uint64_t, llvm::Function *);
 

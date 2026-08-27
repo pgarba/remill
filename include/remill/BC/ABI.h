@@ -31,6 +31,19 @@ enum : size_t {
   kNumBlockArgs = 3
 };
 
+// Describes the arguments to a flat-mode lifted function. `pc` and `memory`
+// are passed by value; every architectural register is passed as an in-out
+// pointer (a reference). The register arguments start at `kFlatFirstRegArgNum`
+// and follow the canonical order defined by `kFlatRegNames` (see
+// `lib/Arch/X86/Arch.cpp`).
+enum : size_t {
+  kFlatPCArgNum = 0,
+  kFlatMemoryPointerArgNum = 1,
+  kFlatFirstRegArgNum = 2,
+  kFlatNumRegs = 17 + 3 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
+  kNumFlatBlockArgs = 2 + (17 + 3 + 7 + 8 + 16)
+};
+
 extern const std::string_view kMemoryVariableName;
 extern const std::string_view kStateVariableName;
 extern const std::string_view kPCVariableName;

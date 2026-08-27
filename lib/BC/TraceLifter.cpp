@@ -62,7 +62,8 @@ using DecoderWorkList = std::set<uint64_t>;  // For ordering.
 
 class TraceLifter::Impl {
  public:
-  Impl(InstructionLifter *inst_lifter_, TraceManager *manager_);
+  Impl(InstructionLifter *inst_lifter_, TraceManager *manager_, bool flat_);
+  bool flat;
 
   // Lift one or more traces starting from `addr`. Calls `callback` with each
   // lifted trace.
@@ -145,8 +146,10 @@ class TraceLifter::Impl {
   std::map<uint64_t, llvm::BasicBlock *> blocks;
 };
 
-TraceLifter::Impl::Impl(InstructionLifter *inst_lifter_, TraceManager *manager_)
-    : arch(inst_lifter_->impl->arch),
+TraceLifter::Impl::Impl(InstructionLifter *inst_lifter_, TraceManager *manager_,
+                        bool flat_)
+    : flat(flat_),
+      arch(inst_lifter_->impl->arch),
       inst_lifter(*inst_lifter_),
       intrinsics(inst_lifter.impl->intrinsics),
       word_type(arch->AddressType()),
@@ -205,8 +208,9 @@ llvm::Function *TraceLifter::Impl::GetLiftedTraceDefinition(uint64_t addr) {
 TraceLifter::~TraceLifter(void) {}
 
 TraceLifter::TraceLifter(InstructionLifter *inst_lifter_,
-                         TraceManager *manager_)
-    : impl(new Impl(inst_lifter_, manager_)) {}
+                         TraceManager *manager_,
+                         bool flat)
+    : impl(new Impl(inst_lifter_, manager_, flat)) {}
 
 void TraceLifter::NullCallback(uint64_t, llvm::Function *) {}
 
@@ -262,7 +266,8 @@ bool TraceLifter::Impl::Lift(
     if (auto trace = GetLiftedTraceDeclaration(trace_addr)) {
       return trace;
     } else if (trace_work_list.count(trace_addr)) {
-      return arch->DeclareLiftedFunction(manager.TraceName(trace_addr), module);
+      return arch->DeclareLiftedFunction(manager.TraceName(trace_addr), module,
+                                         flat);
     } else {
       return nullptr;
     }
@@ -285,7 +290,8 @@ bool TraceLifter::Impl::Lift(
     blocks.clear();
 
     if (!func || !func->isDeclaration()) {
-      func = arch->DeclareLiftedFunction(manager.TraceName(trace_addr), module);
+      func = arch->DeclareLiftedFunction(manager.TraceName(trace_addr), module,
+                                         flat);
     }
 
     CHECK(func->isDeclaration());
@@ -293,9 +299,16 @@ bool TraceLifter::Impl::Lift(
     // Fill in the function, and make sure the block with all register
     // variables jumps to the block that will contain the first instruction
     // of the trace.
-    arch->InitializeEmptyLiftedFunction(func);
+    arch->InitializeEmptyLiftedFunction(func, flat);
 
-    auto state_ptr = NthArgument(func, kStatePointerArgNum);
+    // In flat mode, the state pointer is the STATE_LOCAL alloca (found by
+    // GetStatePointer). In old mode, it's the function argument.
+    llvm::Value *state_ptr;
+    if (flat) {
+      state_ptr = inst_lifter.GetStatePointer(func);
+    } else {
+      state_ptr = NthArgument(func, kStatePointerArgNum);
+    }
 
     if (auto entry_block = &(func->front())) {
       auto pc = LoadProgramCounterArg(func);
@@ -656,6 +669,12 @@ bool TraceLifter::Impl::Lift(
       if (!block.getTerminator()) {
         AddTerminatingTailCall(&block, intrinsics->missing_block, *intrinsics);
       }
+    }
+
+    // In flat mode, retarget all tail calls to __remill_flat_jump and
+    // insert __remill_flat_state_store before each one.
+    if (flat) {
+      arch->FinishFlatLiftedFunction(func);
     }
 
     callback(trace_addr, func);

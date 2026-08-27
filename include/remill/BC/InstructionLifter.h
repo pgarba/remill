@@ -90,6 +90,11 @@ class InstructionLifter {
   llvm::Value *LoadRegValue(llvm::BasicBlock *block, llvm::Value *state_ptr,
                             std::string_view reg_name) const;
 
+  // Return the state pointer for `func`, resolved from the `STATE` variable
+  // (cached). This is the `state` argument in the classic ABI and the local
+  // `State` alloca in flat mode, so it is correct for both.
+  llvm::Value *GetStatePointer(llvm::Function *func) const;
+
   // Clear out the cache of the current register values/addresses loaded.
   void ClearCache(void) const;
 

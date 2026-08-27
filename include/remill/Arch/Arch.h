@@ -177,21 +177,39 @@ class Arch {
 
   // Create a lifted function declaration with name `name` inside of `module`.
   //
+  // If `flat` is true, the function uses the flat (register-by-reference)
+  // ABI: `Memory *F(addr_t pc, Memory *memory, X86FlatState *state)`. The
+  // registers are carried as in-out references through `state`.
+  //
   // NOTE(pag): This should be called after `PrepareModule` and after the
   //            semantics have been loaded.
   llvm::Function *DeclareLiftedFunction(std::string_view name,
-                                        llvm::Module *module) const;
+                                        llvm::Module *module,
+                                        bool flat = false) const;
 
   // Create a lifted function with name `name` inside of `module`.
   //
   // NOTE(pag): This should be called after `PrepareModule` and after the
   //            semantics have been loaded.
   llvm::Function *DefineLiftedFunction(std::string_view name,
-                                       llvm::Module *module) const;
+                                       llvm::Module *module,
+                                       bool flat = false) const;
 
   // Initialize an empty lifted function with the default variables that it
-  // should contain.
-  void InitializeEmptyLiftedFunction(llvm::Function *func) const;
+  // should contain. If `flat` is true, set up the flat-mode entry block
+  // (local `State` alloca + `__remill_flat_state_load` + variables).
+  void InitializeEmptyLiftedFunction(llvm::Function *func,
+                                     bool flat = false) const;
+
+  // Finalize a flat-mode lifted function: insert the state write-back
+  // (`__remill_flat_state_store`) before each terminating tail call.
+  void FinishFlatLiftedFunction(llvm::Function *func) const;
+
+  // Flat-mode support (architecture-specific). `FlatLiftedFunctionType`
+  // returns nullptr if the architecture does not support flat lifting.
+  virtual llvm::FunctionType *FlatLiftedFunctionType(void) const;
+  virtual void InitializeFlatLiftedFunction(llvm::Function *func) const;
+  virtual void FinishFlatLiftedFunctionImpl(llvm::Function *func) const;
 
   // Converts an LLVM module object to have the right triple / data layout
   // information for the target architecture and ensures remill required
@@ -287,10 +305,6 @@ class Arch {
 
   bool IsX86(void) const;
   bool IsAMD64(void) const;
-  bool IsAArch32(void) const;
-  bool IsAArch64(void) const;
-  bool IsSPARC32(void) const;
-  bool IsSPARC64(void) const;
 
   bool IsWindows(void) const;
   bool IsLinux(void) const;
@@ -326,22 +340,6 @@ class Arch {
   // Defined in `lib/Arch/X86/Arch.cpp`.
   static ArchPtr GetX86(llvm::LLVMContext *context, OSName os,
                         ArchName arch_name);
-
-  // Defined in `lib/Arch/AArch32/Arch.cpp`.
-  static ArchPtr GetAArch32(llvm::LLVMContext *context, OSName os,
-                            ArchName arch_name);
-
-  // Defined in `lib/Arch/AArch64/Arch.cpp`.
-  static ArchPtr GetAArch64(llvm::LLVMContext *context, OSName os,
-                            ArchName arch_name);
-
-  // Defined in `lib/Arch/SPARC32/Arch.cpp`.
-  static ArchPtr GetSPARC(llvm::LLVMContext *context, OSName os,
-                          ArchName arch_name);
-
-  // Defined in `lib/Arch/SPARC64/Arch.cpp`.
-  static ArchPtr GetSPARC64(llvm::LLVMContext *context, OSName os,
-                            ArchName arch_name);
 
   Arch(void) = delete;
 

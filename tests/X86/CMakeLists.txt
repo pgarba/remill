@@ -82,3 +82,18 @@ endif()
 
 COMPILE_X86_TESTS(amd64 64 0 0)
 COMPILE_X86_TESTS(amd64_avx 64 1 0)
+
+# Flat-lift end-to-end test (64-bit only). Lifts a small basic block in flat
+# mode and verifies the pre-scalarize IR invariants plus in-process SROA
+# scalarization (via ScalarizeFlatFunction; no external `opt` required).
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+  add_executable(flat-lift-test EXCLUDE_FROM_ALL FlatLift.cpp)
+  target_link_libraries(flat-lift-test PRIVATE remill)
+  target_compile_definitions(flat-lift-test PUBLIC ${PROJECT_DEFINITIONS})
+  # Ensure the amd64 semantics bitcode is built before the test runs.
+  add_dependencies(flat-lift-test amd64)
+
+  add_test(NAME "flat_lift" COMMAND flat-lift-test
+    "${CMAKE_CURRENT_BINARY_DIR}/flat_lift.ll")
+  add_dependencies(test_dependencies flat-lift-test)
+endif()

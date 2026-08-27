@@ -120,4 +120,11 @@ void OptimizeBareModule(llvm::Module *module, OptimizationGuide guide) {
   */
 }
 
+// Stub: the legacy PassManagerBuilder-based optimizer is disabled in LLVM 21.
+// Flat mode uses ScalarizeFlatFunction (new PM) instead.
+void OptimizeBareModule(llvm::Module *module, OptimizationGuide guide) {
+  (void)module;
+  (void)guide;
+}
+
 }  // namespace remill
