@@ -2358,9 +2358,11 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
       }
     }
     // Inline in reverse order (inlining invalidates later iterators).
+    // Check parent() to detect already-erased calls (use_empty() doesn't
+    // work for void calls which never have uses).
     for (auto it = to_inline.rbegin(); it != to_inline.rend(); ++it) {
       auto *call = *it;
-      if (call->use_empty()) continue;
+      if (call->getParent() == nullptr) continue;  // already erased
       llvm::InlineFunctionInfo ifi;
       (void)llvm::InlineFunction(*call, ifi);
     }
