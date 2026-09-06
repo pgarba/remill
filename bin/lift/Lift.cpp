@@ -541,6 +541,24 @@ int main(int argc, char *argv[]) {
     remill::FixZextPtrToPtrToInt(&f);
   }
 
+  // Remove unused function declarations.
+  llvm::SmallVector<llvm::Function *, 16> dead_funcs;
+  for (auto &f : dest_module) {
+    if (f.isDeclaration() && f.use_empty()) {
+      dead_funcs.push_back(&f);
+    }
+  }
+  for (auto *f : dead_funcs) {
+    f->eraseFromParent();
+  }
+
+  // Fix linkonce_odr linkage (invalid for standalone compilation).
+  for (auto &f : dest_module) {
+    if (f.getLinkage() == llvm::GlobalValue::LinkOnceODRLinkage) {
+      f.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    }
+  }
+
   if (!g_ir_out.empty()) {
     if (!remill::StoreModuleIRToFile(&dest_module, g_ir_out, true)) {
       LOG(ERROR) << "Could not save LLVM IR to " << g_ir_out;
