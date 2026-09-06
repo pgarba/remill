@@ -301,22 +301,27 @@ bool TraceLifter::Impl::Lift(
     // of the trace.
     arch->InitializeEmptyLiftedFunction(func, flat);
 
-    // In flat mode, the state pointer is the STATE_LOCAL alloca (found by
-    // GetStatePointer). In old mode, it's the function argument.
+    // In pure-SSA flat mode, there is no state struct. The pointer args are
+    // the register addresses. state_ptr is nullptr; LoadRegAddress uses the
+    // flat register map to return pointer args directly.
+    // In old mode, it's the function argument.
     llvm::Value *state_ptr;
     if (flat) {
-      state_ptr = inst_lifter.GetStatePointer(func);
+      state_ptr = nullptr;  // Pure-SSA: no state struct.
     } else {
       state_ptr = NthArgument(func, kStatePointerArgNum);
     }
 
     if (auto entry_block = &(func->front())) {
-      auto pc = LoadProgramCounterArg(func);
-      auto [next_pc_ref, next_pc_ref_type] = inst_lifter.LoadRegAddress(
-          entry_block, state_ptr, kNextPCVariableName);
-
-      // Initialize `NEXT_PC`.
-      (void) new llvm::StoreInst(pc, next_pc_ref, entry_block);
+      // In flat mode, NEXT_PC is already initialized in
+      // InitializeFlatLiftedFunction (load *PC → store *NEXT_PC).
+      // In old mode, initialize NEXT_PC from the PC argument.
+      if (!flat) {
+        auto pc = LoadProgramCounterArg(func);
+        auto [next_pc_ref, next_pc_ref_type] = inst_lifter.LoadRegAddress(
+            entry_block, state_ptr, kNextPCVariableName);
+        (void) new llvm::StoreInst(pc, next_pc_ref, entry_block);
+      }
 
       // Branch to the first basic block.
       llvm::BranchInst::Create(GetOrCreateBlock(trace_addr), entry_block);

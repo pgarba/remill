@@ -31,17 +31,22 @@ enum : size_t {
   kNumBlockArgs = 3
 };
 
-// Describes the arguments to a flat-mode lifted function. `pc` and `memory`
-// are passed by value; every architectural register is passed as an in-out
-// pointer (a reference). The register arguments start at `kFlatFirstRegArgNum`
-// and follow the canonical order defined by `kFlatRegNames` (see
-// `lib/Arch/X86/Arch.cpp`).
+// Describes the arguments to a flat-mode lifted function. `pc` and `next_pc`
+// are passed as in-out pointers; `memory` is passed by value; every
+// architectural register is passed as an in-out pointer (a reference). The
+// register arguments start at `kFlatFirstRegArgNum` and follow the canonical
+// order defined by `kFlatRegNames` (see `lib/Arch/X86/Arch.cpp`).
+//
+// Pure-SSA mode: the pointer args ARE the register addresses. No state struct,
+// no GEPs, no SROA. The ISEL `_flat` wrappers (produced by flat-gen) take the
+// same register pointers and operate on them directly.
 enum : size_t {
-  kFlatPCArgNum = 0,
-  kFlatMemoryPointerArgNum = 1,
-  kFlatFirstRegArgNum = 2,
+  kFlatPCArgNum = 0,             // addr_t *pc
+  kFlatMemoryPointerArgNum = 1,  // Memory *memory (by value)
+  kFlatNextPCArgNum = 2,         // addr_t *next_pc
+  kFlatFirstRegArgNum = 3,       // first register pointer
   kFlatNumRegs = 17 + 3 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
-  kNumFlatBlockArgs = 2 + (17 + 3 + 7 + 8 + 16)
+  kNumFlatBlockArgs = 3 + (17 + 3 + 7 + 8 + 16)  // pc + mem + next_pc + regs
 };
 
 extern const std::string_view kMemoryVariableName;

@@ -625,8 +625,10 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
   if (flat) {
     auto memory = remill::NthArgument(func, kFlatMemoryPointerArgNum);
     auto pc = remill::NthArgument(func, kFlatPCArgNum);
+    auto next_pc = remill::NthArgument(func, kFlatNextPCArgNum);
     memory->setName("memory");
-    pc->setName("program_counter");
+    pc->setName("PC");
+    next_pc->setName("NEXT_PC");
 
     // Name each register argument and add noalias.
     for (size_t i = 0; i < kFlatNumRegs; ++i) {

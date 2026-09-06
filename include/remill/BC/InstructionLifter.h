@@ -95,6 +95,10 @@ class InstructionLifter {
   // `State` alloca in flat mode, so it is correct for both.
   llvm::Value *GetStatePointer(llvm::Function *func) const;
 
+  // Enable pure-SSA flat mode: pointer args ARE register addresses, no state
+  // struct, no GEPs, no SROA. Must be called before lifting.
+  void SetFlatMode(bool flat);
+
   // Clear out the cache of the current register values/addresses loaded.
   void ClearCache(void) const;
 

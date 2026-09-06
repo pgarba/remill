@@ -23,12 +23,14 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
 #include <remill/Arch/Arch.h>
 #include <remill/Arch/Instruction.h>
 #include <remill/Arch/Name.h>
 #include <remill/BC/ABI.h>
+#include <remill/BC/Annotate.h>
 #include <remill/BC/IntrinsicTable.h>
 #include <remill/BC/Lifter.h>
 #include <remill/BC/Optimizer.h>
@@ -278,7 +280,23 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  std::unique_ptr<llvm::Module> module(remill::LoadArchSemantics(arch));
+  // In flat mode, load the flat bitcode (with _flat ISEL wrappers).
+  std::unique_ptr<llvm::Module> module;
+  if (g_flat) {
+    auto arch_name = remill::GetArchName(arch->arch_name);
+    std::string path = remill::FindFlatSemanticsBitcodeFile(arch_name);
+    llvm::outs() << "Loading " << arch_name << " flat semantics from " << path
+                 << "\n";
+    module = remill::LoadModuleFromFile(arch->context,
+                                         std::filesystem::path(path));
+    arch->PrepareModule(module);
+    arch->InitFromSemanticsModule(module.get());
+    for (auto &func : *module) {
+      remill::Annotate<remill::Semantics>(&func);
+    }
+  } else {
+    module = remill::LoadArchSemantics(arch);
+  }
 
   const auto state_ptr_type = arch->StatePointerType();
   const auto mem_ptr_type = arch->MemoryPointerType();
@@ -287,6 +305,11 @@ int main(int argc, char *argv[]) {
   SimpleTraceManager manager(memory);
   remill::IntrinsicTable intrinsics(module);
   remill::InstructionLifter inst_lifter(arch, intrinsics);
+
+  // Enable pure-SSA flat mode: pointer args ARE register addresses.
+  // No state struct, no GEPs, no SROA needed.
+  inst_lifter.SetFlatMode(g_flat);
+
   remill::TraceLifter trace_lifter(inst_lifter, manager, g_flat);
 
   // Lift all discoverable traces starting from `--entry_address` into
@@ -298,14 +321,9 @@ int main(int argc, char *argv[]) {
   remill::OptimizationGuide guide = {};
   remill::OptimizeModule(arch, module, manager.traces, guide);
 
-  // In flat mode, run SROA to scalarize the STATE_LOCAL alloca.
-  // This eliminates the local State struct and replaces it with individual
-  // register values, producing much smaller IR.
-  if (g_flat) {
-    for (auto &trace : manager.traces) {
-      remill::ScalarizeFlatFunction(module.get(), trace.second);
-    }
-  }
+  // No SROA needed in pure-SSA flat mode: there is no state struct to
+  // scalarize. The ISEL _flat wrappers were pre-scalarized at build time.
+
 
   // Create a new module in which we will move all the lifted functions. Prepare
   // the module for code of this architecture, i.e. set the data layout, triple,
@@ -321,6 +339,10 @@ int main(int argc, char *argv[]) {
   // because it won't be bogged down with all of the semantics definitions.
   // This is a good JITing strategy: optimize the lifted code in the semantics
   // module, move it to a new module, instrument it there, then JIT compile it.
+  // Verification is skipped in flat mode for now (pre-existing readnone
+  // attributes in the bitcode cause noise). The MoveFunctionIntoModule will
+  // catch real structural errors.
+
   for (auto &lifted_entry : manager.traces) {
     if (lifted_entry.first == g_entry_address) {
       entry_trace = lifted_entry.second;

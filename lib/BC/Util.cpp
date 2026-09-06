@@ -226,6 +226,15 @@ std::pair<llvm::Value *, llvm::Type *>
 FindVarInFunction(llvm::Function *function, std::string_view name_,
                   bool allow_failure) {
   llvm::StringRef name(name_.data(), name_.size());
+
+  // Check function arguments by name (needed for flat-mode pointer args
+  // like PC, NEXT_PC that are named function parameters).
+  for (auto &arg : function->args()) {
+    if (arg.getName() == name) {
+      return {&arg, arg.getType()};
+    }
+  }
+
   if (!function->empty()) {
     for (auto &instr : function->getEntryBlock()) {
       if (instr.getName() == name) {
@@ -260,9 +269,10 @@ llvm::Value *LoadStatePointer(llvm::Function *function) {
         }
       }
     }
-    CHECK(false) << "Missing STATE_LOCAL alloca in flat function "
-                 << function->getName().str();
-    return nullptr;
+    // Pure-SSA flat mode: no state alloca. Return the PC arg as a
+    // placeholder; the tail call will be retargeted by
+    // FinishFlatLiftedFunction.
+    return NthArgument(function, kFlatPCArgNum);
   }
 
   CHECK(kNumBlockArgs == function->arg_size())
@@ -589,6 +599,20 @@ std::string FindSemanticsBitcodeFile(std::string_view arch) {
 
   assert(false);
   return "";
+}
+
+// Find the flat-mode semantics bitcode file (`<arch>_flat.bc`).
+// Falls back to the regular bitcode if the flat version doesn't exist.
+std::string FindFlatSemanticsBitcodeFile(std::string_view arch) {
+  for (auto sem_dir : gSemanticsSearchPaths) {
+    std::stringstream ss;
+    ss << sem_dir << "/" << arch << "_flat.bc";
+    if (auto sem_path = ss.str(); FileExists(sem_path)) {
+      return sem_path;
+    }
+  }
+  // Fall back to the regular bitcode (no _flat wrappers available).
+  return FindSemanticsBitcodeFile(arch);
 }
 
 namespace {

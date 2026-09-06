@@ -229,7 +229,7 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
 // basic block. For benchmarking and single-block testing, it simply returns
 // the memory pointer unchanged (mirrors `__remill_jump` in saturn_helpers.cpp).
 extern "C" Memory *__remill_flat_jump(
-    addr_t addr, Memory *memory,
+    addr_t *pc, Memory *memory, addr_t *next_pc,
     addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
     addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
@@ -244,7 +244,7 @@ extern "C" Memory *__remill_flat_jump(
     vec128_t *xmm4, vec128_t *xmm5, vec128_t *xmm6, vec128_t *xmm7,
     vec128_t *xmm8, vec128_t *xmm9, vec128_t *xmm10, vec128_t *xmm11,
     vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15) {
-  (void)addr;
+  (void)pc; (void)next_pc;
   (void)rax; (void)rbx; (void)rcx; (void)rdx;
   (void)rsi; (void)rdi; (void)rsp; (void)rbp;
   (void)r8; (void)r9; (void)r10; (void)r11;

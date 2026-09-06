@@ -86,6 +86,70 @@ class InstructionLifter::Impl {
   llvm::Module *const module;
   llvm::Function *const invalid_instruction;
   llvm::Function *const unsupported_instruction;
+
+  // Pure-SSA flat mode: pointer args ARE register addresses. No state struct.
+  bool flat{false};
+
+  // Cache of flat register name → argument index.
+  std::unordered_map<std::string, size_t> flat_reg_index;
+
+  // Build the flat register name → index mapping.
+  // Register names are UPPERCASE (matching the Arch register names).
+  void InitFlatRegMap() {
+    // 17 GPRs (matches kFlatRegs order in Arch.cpp).
+    const char *gpr_names[] = {"RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+                               "R8","R9","R10","R11","R12","R13","R14","R15","RIP"};
+    for (size_t i = 0; i < 17; ++i) flat_reg_index[gpr_names[i]] = i;
+
+    // Sub-register aliases: all sub-registers map to the same pointer arg
+    // as their full-size parent (the ISEL accesses the correct width through
+    // the pointer).
+    // RAX (0): EAX, AX, AL, AH
+    flat_reg_index["EAX"] = 0; flat_reg_index["AX"] = 0;
+    flat_reg_index["AL"] = 0; flat_reg_index["AH"] = 0;
+    // RBX (1): EBX, BX, BL, BH
+    flat_reg_index["EBX"] = 1; flat_reg_index["BX"] = 1;
+    flat_reg_index["BL"] = 1; flat_reg_index["BH"] = 1;
+    // RCX (2): ECX, CX, CL, CH
+    flat_reg_index["ECX"] = 2; flat_reg_index["CX"] = 2;
+    flat_reg_index["CL"] = 2; flat_reg_index["CH"] = 2;
+    // RDX (3): EDX, DX, DL, DH
+    flat_reg_index["EDX"] = 3; flat_reg_index["DX"] = 3;
+    flat_reg_index["DL"] = 3; flat_reg_index["DH"] = 3;
+    // RSI (4): ESI, SI
+    flat_reg_index["ESI"] = 4; flat_reg_index["SI"] = 4;
+    // RDI (5): EDI, DI
+    flat_reg_index["EDI"] = 5; flat_reg_index["DI"] = 5;
+    // RSP (6): ESP, SP
+    flat_reg_index["ESP"] = 6; flat_reg_index["SP"] = 6;
+    // RBP (7): EBP, BP
+    flat_reg_index["EBP"] = 7; flat_reg_index["BP"] = 7;
+    // R8-R15 (8-15): RnD, RnW, RnB
+    for (int i = 8; i <= 15; ++i) {
+      flat_reg_index["R" + std::to_string(i) + "D"] = i - 8;
+      flat_reg_index["R" + std::to_string(i) + "W"] = i - 8;
+      flat_reg_index["R" + std::to_string(i) + "B"] = i - 8;
+    }
+    // RIP (16): EIP
+    flat_reg_index["EIP"] = 16;
+
+    // 3 seg bases (names match Arch register names: no underscore).
+    const char *seg_names[] = {"SSBASE","GSBASE","CSBASE"};
+    for (size_t i = 0; i < 3; ++i) flat_reg_index[seg_names[i]] = 17 + i;
+    // 7 flags.
+    const char *flag_names[] = {"CF","PF","AF","ZF","SF","DF","OF"};
+    for (size_t i = 0; i < 7; ++i) flat_reg_index[flag_names[i]] = 20 + i;
+    // 8 MMX.
+    for (int i = 0; i < 8; ++i) {
+      std::string name = "MM" + std::to_string(i);
+      flat_reg_index[name] = 27 + i;
+    }
+    // 16 XMM.
+    for (int i = 0; i < 16; ++i) {
+      std::string name = "XMM" + std::to_string(i);
+      flat_reg_index[name] = 35 + i;
+    }
+  }
 };
 
 }  // namespace remill

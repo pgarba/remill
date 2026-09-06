@@ -39,6 +39,22 @@ llvm::Function *GetInstructionFunction(llvm::Module *module,
   return llvm::dyn_cast_or_null<llvm::Function>(sem);
 }
 
+// Try to find the flat wrapper for an ISEL function. The flat wrapper is
+// named `<original_mangled_name>_flat` (created by flat-gen). We look up the
+// original ISEL function first, then append "_flat" to its name.
+llvm::Function *GetFlatInstructionFunction(llvm::Module *module,
+                                           std::string_view function,
+                                           llvm::Function *original_isel) {
+  if (!original_isel) {
+    return nullptr;
+  }
+  auto flat_name = original_isel->getName().str() + "_flat";
+  if (auto *f = module->getFunction(flat_name)) {
+    return f;
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 InstructionLifter::Impl::Impl(const Arch *arch_,
@@ -63,6 +79,13 @@ InstructionLifter::Impl::Impl(const Arch *arch_,
 }
 
 InstructionLifter::~InstructionLifter(void) {}
+
+void InstructionLifter::SetFlatMode(bool flat) {
+  impl->flat = flat;
+  if (flat) {
+    impl->InitFlatRegMap();
+  }
+}
 
 InstructionLifter::InstructionLifter(const Arch *arch_,
                                      const IntrinsicTable *intrinsics_)
@@ -192,40 +215,77 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
   }
 
   std::vector<llvm::Value *> args;
-  args.reserve(arch_inst.operands.size() + 2);
 
-  // First two arguments to an instruction semantics function are the
-  // state pointer, and a pointer to the memory pointer.
-  args.push_back(nullptr);
-  args.push_back(state_ptr);
-
-  auto isel_func_type = isel_func->getFunctionType();
-  auto arg_num = 2U;
-
-  for (auto &op : arch_inst.operands) {
-    if (!(arg_num < isel_func_type->getNumParams())) {
-      return kLiftedMismatchedISEL;
+  if (impl->flat) {
+    // Pure-SSA flat mode: call the _flat ISEL wrapper.
+    // Signature: F_flat(Memory *mem, ptr reg_0..reg_50, operands...)
+    auto flat_isel = GetFlatInstructionFunction(module, arch_inst.function,
+                                                 isel_func);
+    if (!flat_isel) {
+      // Fall back to the original ISEL if the flat wrapper doesn't exist.
+      flat_isel = isel_func;
     }
 
-    auto arg = NthArgument(isel_func, arg_num);
-    auto arg_type = arg->getType();
-    auto operand = LiftOperand(arch_inst, block, state_ptr, arg, op);
-    arg_num += 1;
-    auto op_type = operand->getType();
-    assert(op_type == arg_type);
+    args.reserve(arch_inst.operands.size() + 2 + kFlatNumRegs);
 
-    args.push_back(operand);
+    // First arg: memory pointer (by value).
+    args.push_back(ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref));
+
+    // Next 51 args: the register pointer arguments from the lifted function.
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      args.push_back(NthArgument(func, kFlatFirstRegArgNum + i));
+    }
+
+    // Then the operands (same as original ISEL operands, starting at arg 2).
+    auto isel_func_type = isel_func->getFunctionType();
+    for (unsigned i = 2; i < isel_func_type->getNumParams(); ++i) {
+      auto arg = NthArgument(isel_func, i);
+      auto arg_type = arg->getType();
+      auto operand = LiftOperand(arch_inst, block, state_ptr, arg, arch_inst.operands[i - 2]);
+      auto op_type = operand->getType();
+      assert(op_type == arg_type);
+      args.push_back(operand);
+    }
+
+    auto CI = ir.CreateCall(flat_isel, args);
+    if (CIInstruction) {
+      *CIInstruction = CI;
+    }
+    ir.CreateStore(CI, mem_ptr_ref);
+  } else {
+    // Classic mode: first two args are memory and state pointer.
+    args.reserve(arch_inst.operands.size() + 2);
+    args.push_back(nullptr);
+    args.push_back(state_ptr);
+
+    auto isel_func_type = isel_func->getFunctionType();
+    auto arg_num = 2U;
+
+    for (auto &op : arch_inst.operands) {
+      if (!(arg_num < isel_func_type->getNumParams())) {
+        return kLiftedMismatchedISEL;
+      }
+
+      auto arg = NthArgument(isel_func, arg_num);
+      auto arg_type = arg->getType();
+      auto operand = LiftOperand(arch_inst, block, state_ptr, arg, op);
+      arg_num += 1;
+      auto op_type = operand->getType();
+      assert(op_type == arg_type);
+
+      args.push_back(operand);
+    }
+
+    // Pass in current value of the memory pointer.
+    args[0] = ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref);
+
+    // Call the function that implements the instruction semantics.
+    auto CI = ir.CreateCall(isel_func, args);
+    if (CIInstruction) {
+      *CIInstruction = CI;
+    }
+    ir.CreateStore(CI, mem_ptr_ref);
   }
-
-  // Pass in current value of the memory pointer.
-  args[0] = ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref);
-
-  // Call the function that implements the instruction semantics.
-  auto CI = ir.CreateCall(isel_func, args);
-  if (CIInstruction) {
-    *CIInstruction = CI;
-  }
-  ir.CreateStore(CI, mem_ptr_ref);
 
   // End an atomic block.
   if (arch_inst.is_atomic_read_modify_write) {
@@ -280,6 +340,65 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
 
   if (reg_ptr_it->second.first) {
     (void) added;
+    return reg_ptr_it->second;
+  }
+
+  // Pure-SSA flat mode: the pointer args ARE the register addresses.
+  // Map the register name directly to its function argument.
+  if (impl->flat) {
+    // PC → arg 0 (addr_t *)
+    if (reg_name_ == kPCVariableName) {
+      auto *pc_arg = NthArgument(func, kFlatPCArgNum);
+      reg_ptr_it->second = {pc_arg, pc_arg->getType()};
+      return reg_ptr_it->second;
+    }
+    // NEXT_PC → arg 2 (addr_t *)
+    if (reg_name_ == kNextPCVariableName) {
+      auto *npc_arg = NthArgument(func, kFlatNextPCArgNum);
+      reg_ptr_it->second = {npc_arg, npc_arg->getType()};
+      return reg_ptr_it->second;
+    }
+    // MEMORY: find the "MEMORY" alloca in the entry block (created by
+    // InitializeFlatLiftedFunction).
+    if (reg_name_ == kMemoryVariableName) {
+      for (auto &instr : func->getEntryBlock()) {
+        if (instr.getName().str() == std::string(kMemoryVariableName)) {
+          if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&instr)) {
+            reg_ptr_it->second = {alloca, alloca->getAllocatedType()};
+            return reg_ptr_it->second;
+          }
+        }
+      }
+      // Fallback: create a local alloca for the memory pointer.
+      // This can happen if the entry block doesn't have the MEMORY alloca
+      // (e.g., the block was created before InitializeFlatLiftedFunction ran).
+      llvm::IRBuilder<> ir(block);
+      auto *mem_alloca = ir.CreateAlloca(impl->memory_ptr_type, nullptr, "MEMORY");
+      auto *mem_arg = NthArgument(func, kFlatMemoryPointerArgNum);
+      ir.CreateStore(mem_arg, mem_alloca);
+      reg_ptr_it->second = {mem_alloca, impl->memory_ptr_type};
+      return reg_ptr_it->second;
+    }
+    // Register: look up in the flat register map.
+    {
+      std::string lookup_name(reg_name_.data(), reg_name_.size());
+      auto it = impl->flat_reg_index.find(lookup_name);
+      if (it != impl->flat_reg_index.end()) {
+        auto *reg_arg = NthArgument(func, kFlatFirstRegArgNum + it->second);
+        reg_ptr_it->second = {reg_arg, reg_arg->getType()};
+        return reg_ptr_it->second;
+      }
+    }
+    // In flat mode, registers not in the flat map are unsupported.
+    // Fall back to FindVarInFunction (for MEMORY, segment bases, etc.),
+    // then return nullptr if not found.
+    const auto [var_ptr, var_ptr_type] = FindVarInFunction(func, reg_name_, true);
+    if (var_ptr) {
+      reg_ptr_it->second = {var_ptr, var_ptr_type};
+      return reg_ptr_it->second;
+    }
+    std::cerr << "[flat] Unsupported register: " << reg_name_ << std::endl;
+    reg_ptr_it->second = {nullptr, nullptr};
     return reg_ptr_it->second;
   }
 

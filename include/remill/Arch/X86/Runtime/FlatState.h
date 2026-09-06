@@ -107,7 +107,7 @@ enum : unsigned { kX86FlatStateNumFields = 16 + 3 + 7 + 8 + 16 };
 // the flat lifter can emit a tail call to it.
 #if 64 == ADDRESS_SIZE_BITS
 extern "C" Memory *__remill_flat_jump(
-    addr_t addr, Memory *memory,
+    addr_t *pc, Memory *memory, addr_t *next_pc,
     // 17 GPRs.
     addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
     addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,

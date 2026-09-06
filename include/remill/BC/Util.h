@@ -182,6 +182,7 @@ std::string FindHostSemanticsBitcodeFile(void) __attribute__((deprecated));
 
 // Find a semantics bitcode file for the architecture `arch`.
 std::string FindSemanticsBitcodeFile(std::string_view arch);
+std::string FindFlatSemanticsBitcodeFile(std::string_view arch);
 
 // Return a pointer to the Nth argument (N=0 is the first argument).
 llvm::Argument *NthArgument(llvm::Function *func, size_t index);
