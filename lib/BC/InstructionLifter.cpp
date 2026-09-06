@@ -242,14 +242,17 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
         "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
         "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
     };
-    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+    // The _flat ISEL wrapper supports 52 registers (GPR+seg+flags+MMX+XMM).
+    // X87 ST(0-7) (indices 52-59) are in the ABI but not yet wired into
+    // the ISEL wrapper. Full X87 support requires regenerating flat bitcode.
+    static constexpr size_t kIselWrapperNumRegs = 52;
+    for (size_t i = 0; i < kIselWrapperNumRegs && i < kFlatNumRegs; ++i) {
       auto reg_name_str = (std::string("REG_") + kRegNames52[i]).c_str();
       auto *val = FindVarInFunction(func, reg_name_str, true).first;
       auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
       if (reg_alloca) {
         args.push_back(reg_alloca);
       } else {
-        // Fallback: pass the by-value arg (type mismatch will be caught later).
         args.push_back(NthArgument(func, kFlatFirstRegArgNum + i));
       }
     }

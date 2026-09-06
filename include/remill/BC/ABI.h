@@ -42,8 +42,8 @@ enum : size_t {
   kFlatMemoryPointerArgNum = 1,  // Memory *memory (ptr)
   kFlatNextPCArgNum = 2,         // addr_t *next_pc (ptr, threaded)
   kFlatFirstRegArgNum = 3,       // first register value (by-value)
-  kFlatNumRegs = 17 + 4 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
-  kNumFlatBlockArgs = 3 + (17 + 4 + 7 + 8 + 16)  // pc + mem + next_pc + regs
+  kFlatNumRegs = 17 + 4 + 7 + 8 + 16 + 8,  // GPRs+seg+flags+MMX+XMM+X87
+  kNumFlatBlockArgs = 3 + (17 + 4 + 7 + 8 + 16 + 8)  // pc + mem + next_pc + regs
 };
 
 // Register index → LLVM type helper.
@@ -52,8 +52,10 @@ enum : size_t {
 // 21-27: flags (7) → i8
 // 28-35: MMX (8) → i64
 // 36-51: XMM (16) → <2 x i64>
+// 52-59: X87 ST(0-7) (8) → i128
 inline bool FlatRegIsFlag(size_t idx) { return idx >= 21 && idx < 28; }
 inline bool FlatRegIsXMM(size_t idx) { return idx >= 36 && idx < 52; }
+inline bool FlatRegIsX87(size_t idx) { return idx >= 52 && idx < 60; }
 
 extern const std::string_view kMemoryVariableName;
 extern const std::string_view kStateVariableName;

@@ -149,6 +149,11 @@ class InstructionLifter::Impl {
       std::string name = "XMM" + std::to_string(i);
       flat_reg_index[name] = 36 + i;
     }
+    // 8 X87 ST.
+    for (int i = 0; i < 8; ++i) {
+      std::string name = "ST" + std::to_string(i);
+      flat_reg_index[name] = 52 + i;
+    }
   }
 };
 

@@ -1796,6 +1796,10 @@ static const FlatReg kFlatRegs[] = {
     {"xmm9", nullptr},  {"xmm10", nullptr}, {"xmm11", nullptr},
     {"xmm12", nullptr}, {"xmm13", nullptr}, {"xmm14", nullptr},
     {"xmm15", nullptr},
+    // 8 X87 ST registers (nullptr = no alloc, by-value i128).
+    {"st0", nullptr}, {"st1", nullptr}, {"st2", nullptr},
+    {"st3", nullptr}, {"st4", nullptr}, {"st5", nullptr},
+    {"st6", nullptr}, {"st7", nullptr},
 };
 static_assert(sizeof(kFlatRegs) / sizeof(kFlatRegs[0]) == kFlatNumRegs,
               "kFlatRegs must match kFlatNumRegs");
@@ -1816,6 +1820,8 @@ llvm::FunctionType *X86Arch::FlatLiftedFunctionType(void) const {
     } else if (FlatRegIsXMM(i)) {
       args.push_back(llvm::FixedVectorType::get(
           llvm::Type::getInt64Ty(context), 2));             // <2 x i64> XMM
+    } else if (FlatRegIsX87(i)) {
+      args.push_back(llvm::Type::getInt128Ty(context));     // i128 X87 ST
     } else {
       args.push_back(llvm::Type::getInt64Ty(context));      // i64 GPR/seg/MMX
     }
@@ -1858,9 +1864,10 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
       "CF","PF","AF","ZF","SF","DF","OF",
       "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
       "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
-      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
+      "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"
   };
-  llvm::SmallVector<llvm::AllocaInst *, 52> reg_allocas;
+  llvm::SmallVector<llvm::AllocaInst *, 60> reg_allocas;
   for (size_t i = 0; i < kFlatNumRegs; ++i) {
     auto *reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
     auto *alloca = ir.CreateAlloca(reg_arg->getType(), nullptr,
@@ -1923,7 +1930,8 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
       "CF","PF","AF","ZF","SF","DF","OF",
       "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
       "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
-      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
+      "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"
   };
 
   for (auto &block : *func) {
@@ -1940,13 +1948,14 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
     jump_args.push_back(remill::NthArgument(func, kFlatPCArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatMemoryPointerArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatNextPCArgNum));
-    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+    // Jump function supports 52 regs (X87 ST not yet in jump signature).
+    static constexpr size_t kJumpNumRegs = 52;
+    for (size_t i = 0; i < kJumpNumRegs && i < kFlatNumRegs; ++i) {
       auto *val = FindVarInFunction(func, (std::string("REG_") + kRegNames[i]).c_str(), true).first;
       auto *alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
       if (alloca) {
         jump_args.push_back(ir.CreateLoad(alloca->getAllocatedType(), alloca, "reg_out"));
       } else {
-        // Fallback: pass the by-value arg unchanged (register not modified).
         jump_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
       }
     }

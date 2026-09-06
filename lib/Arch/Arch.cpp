@@ -644,7 +644,9 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
         // 16 XMM
         "XMM0", "XMM1", "XMM2", "XMM3", "XMM4", "XMM5", "XMM6", "XMM7",
         "XMM8", "XMM9", "XMM10", "XMM11", "XMM12", "XMM13", "XMM14",
-        "XMM15"};
+        "XMM15",
+        // 8 X87 ST
+        "ST0", "ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7"};
     static_assert(sizeof(kFlatRegNames) / sizeof(kFlatRegNames[0]) == kFlatNumRegs);
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
