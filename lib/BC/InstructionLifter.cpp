@@ -397,9 +397,11 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
       reg_ptr_it->second = {var_ptr, var_ptr_type};
       return reg_ptr_it->second;
     }
-    std::cerr << "[flat] Unsupported register: " << reg_name_ << std::endl;
-    reg_ptr_it->second = {nullptr, nullptr};
-    return reg_ptr_it->second;
+    LOG(FATAL) << "[flat] Register '" << reg_name_ << "' is not in the flat "
+                   "ABI (51-register limit). This instruction uses a register "
+                   "that cannot be represented in flat-lifted code. Consider "
+                   "extending the flat ABI or using the original (non-flat) "
+                   "mode for workloads that use X87/AVX512 registers.";
   }
 
   // It's already a variable in the function.
@@ -903,7 +905,12 @@ llvm::Value *InstructionLifter::LiftExpressionOperandRec(
     if (!arg || !llvm::isa<llvm::PointerType>(arg->getType())) {
       return LoadRegValue(block, state_ptr, (*reg_op)->name);
     } else {
-      return LoadRegAddress(block, state_ptr, (*reg_op)->name).first;
+      auto *ptr = LoadRegAddress(block, state_ptr, (*reg_op)->name).first;
+      CHECK_NOTNULL(ptr) << "Register '" << (*reg_op)->name
+                         << "' is not in the flat ABI (51-register limit). "
+                            "This instruction uses a register that cannot be "
+                            "represented in flat-lifted code.";
+      return ptr;
     }
 
   } else if (auto ci_op = std::get_if<llvm::Constant *>(op)) {
@@ -913,7 +920,12 @@ llvm::Value *InstructionLifter::LiftExpressionOperandRec(
     if (!arg || !llvm::isa<llvm::PointerType>(arg->getType())) {
       return LoadRegValue(block, state_ptr, *str_op);
     } else {
-      return LoadRegAddress(block, state_ptr, *str_op).first;
+      auto *ptr = LoadRegAddress(block, state_ptr, *str_op).first;
+      CHECK_NOTNULL(ptr) << "Register '" << *str_op
+                         << "' is not in the flat ABI (51-register limit). "
+                            "This instruction uses a register that cannot be "
+                            "represented in flat-lifted code.";
+      return ptr;
     }
   } else {
     assert(false);
