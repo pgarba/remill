@@ -47,12 +47,13 @@ enum : size_t {
 };
 
 // Register index → LLVM type helper.
-// 0-19: GPRs + seg bases → i64
-// 20-26: flags → i8
-// 27-34: MMX → i64
-// 35-51: XMM → <2 x i64>
-inline bool FlatRegIsFlag(size_t idx) { return idx >= 20 && idx < 27; }
-inline bool FlatRegIsXMM(size_t idx) { return idx >= 35 && idx < 52; }
+// 0-16: GPRs (17) → i64
+// 17-20: seg bases (4) → i64
+// 21-27: flags (7) → i8
+// 28-35: MMX (8) → i64
+// 36-51: XMM (16) → <2 x i64>
+inline bool FlatRegIsFlag(size_t idx) { return idx >= 21 && idx < 28; }
+inline bool FlatRegIsXMM(size_t idx) { return idx >= 36 && idx < 52; }
 
 extern const std::string_view kMemoryVariableName;
 extern const std::string_view kStateVariableName;
