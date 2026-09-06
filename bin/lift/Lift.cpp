@@ -24,6 +24,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
 #include <remill/Arch/Arch.h>
@@ -347,6 +348,35 @@ int main(int argc, char *argv[]) {
     if (lifted_entry.first == g_entry_address) {
       entry_trace = lifted_entry.second;
     }
+
+    // In flat mode, inline the _flat ISEL calls into the lifted function
+    // so the output is self-contained (no external ISEL references).
+    if (g_flat) {
+      auto *func = lifted_entry.second;
+      // Collect all non-tail calls to defined functions (the _flat wrappers).
+      llvm::SmallVector<llvm::CallBase *, 16> calls;
+      for (auto &block : *func) {
+        for (auto &inst : block) {
+          if (auto *call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+            auto *callee = call->getCalledFunction();
+            if (callee && callee != func && !callee->isDeclaration() &&
+                !call->isTailCall()) {
+              calls.push_back(call);
+            }
+          }
+        }
+      }
+      // Inline each call (iterate in reverse since inlining invalidates
+      // subsequent iterators).
+      for (auto it = calls.rbegin(); it != calls.rend(); ++it) {
+        auto *call = *it;
+        if (call->use_empty()) continue;  // already inlined/erased
+        llvm::InlineFunctionInfo ifi;
+        auto result = llvm::InlineFunction(*call, ifi);
+        (void)result;
+      }
+    }
+
     remill::MoveFunctionIntoModule(lifted_entry.second, &dest_module);
 
     // If we are providing a prototype, then we'll be re-optimizing the new

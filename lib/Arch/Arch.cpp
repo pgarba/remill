@@ -630,10 +630,25 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
     pc->setName("PC");
     next_pc->setName("NEXT_PC");
 
-    // Name each register argument and add noalias.
+    // Name each register argument using the flat ABI register names.
+    static const char *kFlatRegNames[] = {
+        // 17 GPRs
+        "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RSP", "RBP",
+        "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RIP",
+        // 3 segment bases
+        "SS_BASE", "GS_BASE", "CS_BASE",
+        // 7 flags
+        "CF", "PF", "AF", "ZF", "SF", "DF", "OF",
+        // 8 MMX
+        "MM0", "MM1", "MM2", "MM3", "MM4", "MM5", "MM6", "MM7",
+        // 16 XMM
+        "XMM0", "XMM1", "XMM2", "XMM3", "XMM4", "XMM5", "XMM6", "XMM7",
+        "XMM8", "XMM9", "XMM10", "XMM11", "XMM12", "XMM13", "XMM14",
+        "XMM15"};
+    static_assert(sizeof(kFlatRegNames) / sizeof(kFlatRegNames[0]) == kFlatNumRegs);
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
-      reg_arg->setName("reg_" + std::to_string(i));
+      reg_arg->setName(kFlatRegNames[i]);
       AddNoAliasToArgument(reg_arg);
     }
     AddNoAliasToArgument(memory);
