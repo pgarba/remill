@@ -392,6 +392,16 @@ int main(int argc, char *argv[]) {
 
     remill::MoveFunctionIntoModule(lifted_entry.second, &dest_module);
 
+    // Optimize the moved function in the destination module (smaller scope,
+    // won't touch the 1589 _flat wrappers in the semantics module).
+    if (g_flat_ssa) {
+      auto *moved_func = dest_module.getFunction(
+          lifted_entry.second->getName());
+      if (moved_func) {
+        remill::OptimizeFlatSSAFunction(&dest_module, moved_func);
+      }
+    }
+
     // If we are providing a prototype, then we'll be re-optimizing the new
     // module, and we want everything to get inlined.
     if (make_slice) {

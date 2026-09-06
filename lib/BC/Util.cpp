@@ -47,7 +47,10 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/DCE.h>
 #include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
 
 #include "remill/Arch/Arch.h"
@@ -2334,6 +2337,45 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
 
   // The function may have been renamed or (rarely) eliminated; re-look it up
   // by its original name.
+  return module->getFunction(func->getName());
+}
+
+// Optimize a pure-SSA flat function after inlining the _flat ISEL wrappers.
+// Runs: mem2reg + SROA + instcombine. This scalarizes the State allocas that
+// were inlined from the _flat wrappers and simplifies the flag computation
+// patterns.
+llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
+                                        llvm::Function *func) {
+  if (!module || !func) {
+    return nullptr;
+  }
+
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cgam;
+  llvm::ModuleAnalysisManager mam;
+  llvm::PassBuilder pb(/*TM=*/nullptr, llvm::PipelineTuningOptions(),
+                       std::nullopt, /*PIC=*/nullptr);
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cgam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+  llvm::ModulePassManager mpm;
+  // mem2reg + SROA + instcombine + simplifycfg + DCE as function passes.
+  llvm::FunctionPassManager fpm;
+  fpm.addPass(llvm::PromotePass());  // mem2reg
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+  fpm.addPass(llvm::InstCombinePass());
+  fpm.addPass(llvm::SimplifyCFGPass());
+  fpm.addPass(llvm::DCEPass());
+  // Run instcombine a second time to catch new patterns.
+  fpm.addPass(llvm::InstCombinePass());
+  mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+
+  mpm.run(*module, mam);
+
   return module->getFunction(func->getName());
 }
 
