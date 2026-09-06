@@ -17,6 +17,8 @@
 
 #include "remill/BC/Logging.h"
 
+#include <llvm/Transforms/Utils/Cloning.h>
+
 #include <sstream>
 #include <system_error>
 #include <unordered_map>
@@ -2332,12 +2334,40 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
   pb.registerLoopAnalyses(lam);
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-  // Run the inliner on the whole module to inline always_inline helpers
-  // (e.g. __remill_flat_state_load/store) so the local State pointer
-  // never escapes.
-  // Note: the inliner can crash on modules with conditional branches in
-  // lifted functions (LLVM assertion). We skip it if the target function
-  // has a conditional branch.
+  // Targeted inlining: inline ALL calls to defined functions in the target
+  // function so no pointers escape. We do NOT run the O2 inliner pipeline
+  // on the whole module because LLVM 21 has an assertion bug
+  // (CmpInst::getFlippedStrictnessPredicate) triggered by the inliner when
+  // the module contains conditional branches.
+  {
+    llvm::SmallVector<llvm::CallBase *, 32> to_inline;
+    for (auto &bb : *func) {
+      for (auto &inst : bb) {
+        if (auto *call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+          if (auto *callee = call->getCalledFunction()) {
+            // Inline any call to a defined (non-declaration) function that
+            // isn't the flat jump (which must remain as a tail call).
+            if (!callee->isDeclaration() &&
+                callee != func &&
+                callee->getName() != "__remill_flat_jump" &&
+                !call->isTailCall()) {
+              to_inline.push_back(call);
+            }
+          }
+        }
+      }
+    }
+    // Inline in reverse order (inlining invalidates later iterators).
+    for (auto it = to_inline.rbegin(); it != to_inline.rend(); ++it) {
+      auto *call = *it;
+      if (call->use_empty()) continue;
+      llvm::InlineFunctionInfo ifi;
+      (void)llvm::InlineFunction(*call, ifi);
+    }
+  }
+
+  // Run mem2reg + SROA on the target function. Skip for functions with
+  // conditional branches (LLVM assertion bug).
   bool has_cond_branch = false;
   for (auto &bb : *func) {
     if (auto *br = llvm::dyn_cast<llvm::BranchInst>(bb.getTerminator())) {
@@ -2348,17 +2378,6 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
     }
   }
 
-  if (!has_cond_branch) {
-    llvm::ModulePassManager mpm;
-    mpm.addPass(pb.buildInlinerPipeline(llvm::OptimizationLevel::O2,
-                                        llvm::ThinOrFullLTOPhase::None));
-    mpm.run(*module, mam);
-  }
-
-  // Run mem2reg + SROA ONLY on the target function (not the whole module,
-  // which crashes on some ISEL functions). Also skip for functions with
-  // conditional branches (the BRANCH_TAKEN alloca pattern triggers an LLVM
-  // assertion in the inliner/SROA pipeline).
   if (!has_cond_branch) {
     llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::PromotePass());  // mem2reg
