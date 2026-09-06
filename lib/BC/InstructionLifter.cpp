@@ -231,9 +231,27 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
     // First arg: memory pointer (by value).
     args.push_back(ir.CreateLoad(impl->memory_ptr_type, mem_ptr_ref));
 
-    // Next 51 args: the register pointer arguments from the lifted function.
+    // Next 52 args: the REG_* allocas (pointers to register values).
+    // The _flat ISEL wrapper expects pointer args; we pass the allocas.
+    static const char *kRegNames52[kFlatNumRegs] = {
+        "RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+        "R8","R9","R10","R11","R12","R13","R14","R15","RIP",
+        "SS_BASE","GS_BASE","CS_BASE","FS_BASE",
+        "CF","PF","AF","ZF","SF","DF","OF",
+        "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
+        "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
+        "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+    };
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
-      args.push_back(NthArgument(func, kFlatFirstRegArgNum + i));
+      auto reg_name_str = (std::string("REG_") + kRegNames52[i]).c_str();
+      auto *val = FindVarInFunction(func, reg_name_str, true).first;
+      auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
+      if (reg_alloca) {
+        args.push_back(reg_alloca);
+      } else {
+        // Fallback: pass the by-value arg (type mismatch will be caught later).
+        args.push_back(NthArgument(func, kFlatFirstRegArgNum + i));
+      }
     }
 
     // Then the operands (same as original ISEL operands, starting at arg 2).
@@ -379,31 +397,35 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
       reg_ptr_it->second = {mem_alloca, impl->memory_ptr_type};
       return reg_ptr_it->second;
     }
-    // Register: look up in the flat register map.
+    // Register: look up in the flat register map. The register "address" is
+    // the REG_* alloca (created by InitializeFlatLiftedFunction). The by-value
+    // function args are stored into these allocas at entry.
     {
       std::string lookup_name(reg_name_.data(), reg_name_.size());
       auto it = impl->flat_reg_index.find(lookup_name);
       if (it != impl->flat_reg_index.end()) {
-        auto *reg_arg = NthArgument(func, kFlatFirstRegArgNum + it->second);
-        // Determine the value type stored at this register pointer.
-        // With opaque pointers, reg_arg->getType() is always 'ptr',
-        // but the *value* has a specific type:
-        //   0-19: GPRs + seg bases -> i64
-        //   20-26: flags -> i8
-        //   27-34: MMX -> i64
-        //   35-51: XMM -> <2 x i64>
-        auto &ctx = func->getContext();
-        llvm::Type *val_ty;
         size_t idx = it->second;
-        if (idx >= 21 && idx <= 27) {
-          val_ty = llvm::Type::getInt8Ty(ctx);  // flags
-        } else if (idx >= 36 && idx <= 51) {
-          val_ty = llvm::FixedVectorType::get(
-              llvm::Type::getInt64Ty(ctx), 2);  // XMM vec128
-        } else {
-          val_ty = llvm::Type::getInt64Ty(ctx);  // GPRs, seg, MMX
+        // Find the REG_* alloca for this register.
+        static const char *kRegNames[kFlatNumRegs] = {
+            "RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+            "R8","R9","R10","R11","R12","R13","R14","R15","RIP",
+            "SS_BASE","GS_BASE","CS_BASE","FS_BASE",
+            "CF","PF","AF","ZF","SF","DF","OF",
+            "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
+            "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
+            "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+        };
+        auto reg_name_str = (std::string("REG_") + kRegNames[idx]).c_str();
+        auto *val = FindVarInFunction(func, reg_name_str, true).first;
+        auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
+        if (reg_alloca) {
+          reg_ptr_it->second = {reg_alloca, reg_alloca->getAllocatedType()};
+          return reg_ptr_it->second;
         }
-        reg_ptr_it->second = {reg_arg, val_ty};
+        // Fallback: if the alloca isn't found (shouldn't happen), use the
+        // by-value arg directly (it's not a pointer, so this will fail later).
+        auto *reg_arg = NthArgument(func, kFlatFirstRegArgNum + idx);
+        reg_ptr_it->second = {reg_arg, reg_arg->getType()};
         return reg_ptr_it->second;
       }
     }

@@ -649,7 +649,11 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
       reg_arg->setName(kFlatRegNames[i]);
-      AddNoAliasToArgument(reg_arg);
+      // noalias only applies to pointer args; by-value regs (i64/i8/vec)
+      // must not get it.
+      if (reg_arg->getType()->isPointerTy()) {
+        AddNoAliasToArgument(reg_arg);
+      }
     }
     AddNoAliasToArgument(memory);
   } else {

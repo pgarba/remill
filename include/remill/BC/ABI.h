@@ -31,23 +31,28 @@ enum : size_t {
   kNumBlockArgs = 3
 };
 
-// Describes the arguments to a flat-mode lifted function. `pc` and `next_pc`
-// are passed as in-out pointers; `memory` is passed by value; every
-// architectural register is passed as an in-out pointer (a reference). The
-// register arguments start at `kFlatFirstRegArgNum` and follow the canonical
-// order defined by `kFlatRegNames` (see `lib/Arch/X86/Arch.cpp`).
-//
-// Pure-SSA mode: the pointer args ARE the register addresses. No state struct,
-// no GEPs, no SROA. The ISEL `_flat` wrappers (produced by flat-gen) take the
-// same register pointers and operate on them directly.
+// Describes the arguments to a flat-mode lifted function (ABI v2: by-value).
+// `pc` and `next_pc` are in-out pointers (threaded between blocks); `memory`
+// is ptr; every architectural register is passed **by value** (i64 for GPRs/
+// seg/MMX, i8 for flags, <2 x i64> for XMM). Internally, the lifter stores
+// the by-value args into local allocas which are passed as pointers to the
+// `_flat` ISEL wrappers. SROA promotes the allocas to SSA values.
 enum : size_t {
-  kFlatPCArgNum = 0,             // addr_t *pc
-  kFlatMemoryPointerArgNum = 1,  // Memory *memory (by value)
-  kFlatNextPCArgNum = 2,         // addr_t *next_pc
-  kFlatFirstRegArgNum = 3,       // first register pointer
+  kFlatPCArgNum = 0,             // addr_t *pc (ptr, threaded)
+  kFlatMemoryPointerArgNum = 1,  // Memory *memory (ptr)
+  kFlatNextPCArgNum = 2,         // addr_t *next_pc (ptr, threaded)
+  kFlatFirstRegArgNum = 3,       // first register value (by-value)
   kFlatNumRegs = 17 + 4 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
   kNumFlatBlockArgs = 3 + (17 + 4 + 7 + 8 + 16)  // pc + mem + next_pc + regs
 };
+
+// Register index → LLVM type helper.
+// 0-19: GPRs + seg bases → i64
+// 20-26: flags → i8
+// 27-34: MMX → i64
+// 35-51: XMM → <2 x i64>
+inline bool FlatRegIsFlag(size_t idx) { return idx >= 20 && idx < 27; }
+inline bool FlatRegIsXMM(size_t idx) { return idx >= 35 && idx < 52; }
 
 extern const std::string_view kMemoryVariableName;
 extern const std::string_view kStateVariableName;

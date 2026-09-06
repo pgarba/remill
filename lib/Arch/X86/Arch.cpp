@@ -1805,21 +1805,28 @@ llvm::FunctionType *X86Arch::FlatLiftedFunctionType(void) const {
   auto addr = llvm::Type::getIntNTy(context, address_size);
   auto ptr = llvm::PointerType::get(context, 0);
 
-  // Build the argument list: *pc, memory, *next_pc, then one pointer per register.
+  // Build the argument list: *pc, memory, *next_pc, then by-value register args.
   llvm::SmallVector<llvm::Type *, 64> args;
-  args.push_back(ptr);             // *pc (addr_t *)
-  args.push_back(impl->memory_type);  // memory (Memory *, by value)
-  args.push_back(ptr);             // *next_pc (addr_t *)
+  args.push_back(ptr);                     // *pc (addr_t *, threaded)
+  args.push_back(impl->memory_type);       // Memory *memory (ptr)
+  args.push_back(ptr);                     // *next_pc (addr_t *, threaded)
   for (size_t i = 0; i < kFlatNumRegs; ++i) {
-    args.push_back(ptr);  // every register is a pointer (opaque in LLVM 21).
+    if (FlatRegIsFlag(i)) {
+      args.push_back(llvm::Type::getInt8Ty(context));       // i8 flags
+    } else if (FlatRegIsXMM(i)) {
+      args.push_back(llvm::FixedVectorType::get(
+          llvm::Type::getInt64Ty(context), 2));             // <2 x i64> XMM
+    } else {
+      args.push_back(llvm::Type::getInt64Ty(context));      // i64 GPR/seg/MMX
+    }
   }
   return llvm::FunctionType::get(impl->memory_type, args, false);
 }
 
-// Set up the flat-mode entry block for pure-SSA mode. No state struct is
-// created. The register pointer arguments ARE the register addresses.
-// We only initialize NEXT_PC from PC and set up the segment-base allocas
-// that the ISEL code expects to find by name.
+// Set up the flat-mode entry block. Register args are by-value (i64/i8/
+// <2 x i64>). We create local allocas for each register and store the by-value
+// args into them. The allocas serve as the pointer interface for the `_flat`
+// ISEL wrappers. SROA promotes them to SSA values.
 void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
                                            bool flat_ssa) const {
   auto module = func->getParent();
@@ -1834,31 +1841,30 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
 
   llvm::IRBuilder<> ir(block);
 
-  // Initialize NEXT_PC = *PC (load PC through its pointer, store to NEXT_PC).
+  // Initialize NEXT_PC = *PC (PC/NEXT_PC are still ptr args, threaded).
   auto *pc_val = ir.CreateLoad(addr, pc_ptr, "pc_init");
   ir.CreateStore(pc_val, next_pc_ptr);
 
-  // MEMORY: store the memory pointer into an alloca so that
-  // FindVarInFunction can find it by name.
+  // MEMORY: store the memory pointer into an alloca.
   ir.CreateStore(memory, ir.CreateAlloca(impl->memory_type, nullptr, "MEMORY"));
 
-  // Old flat mode (!flat_ssa): create STATE_LOCAL alloca and call
-  // __remill_flat_state_load to populate it from the register pointer args.
-  if (!flat_ssa) {
-    auto *state_alloca = ir.CreateAlloca(impl->state_type, nullptr,
-                                         "STATE_LOCAL");
-    // Build the args for __remill_flat_state_load:
-    // (State *state, addr_t *rax, ..., vec128_t *xmm15) = 52 args
-    llvm::SmallVector<llvm::Value *, 56> load_args;
-    load_args.push_back(state_alloca);  // state
-    for (size_t i = 0; i < kFlatNumRegs; ++i) {
-      load_args.push_back(
-          remill::NthArgument(func, kFlatFirstRegArgNum + i));
-    }
-    auto *state_load = module->getFunction("__remill_flat_state_load");
-    CHECK(state_load) << "Missing __remill_flat_state_load";
-    ir.CreateCall(state_load, load_args);
-
+  // Create local allocas for each register and store the by-value arg into it.
+  // The allocas are named REG_0..REG_51 and serve as the pointer interface
+  // for the _flat ISEL wrappers.
+  const char *kRegNames[kFlatNumRegs] = {
+      "RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+      "R8","R9","R10","R11","R12","R13","R14","R15","RIP",
+      "SS_BASE","GS_BASE","CS_BASE","FS_BASE",
+      "CF","PF","AF","ZF","SF","DF","OF",
+      "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
+      "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
+      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+  };
+  for (size_t i = 0; i < kFlatNumRegs; ++i) {
+    auto *reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
+    auto *alloca = ir.CreateAlloca(reg_arg->getType(), nullptr,
+                                   llvm::Twine("REG_") + kRegNames[i]);
+    ir.CreateStore(reg_arg, alloca);
   }
 
   // Create a standalone BRANCH_TAKEN alloca in the entry block so that
@@ -1883,9 +1889,8 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
   ir.CreateAlloca(addr, nullptr, "MONITOR");
 }
 
-// Exit-side: retarget all tail calls to `__remill_flat_jump`. In pure-SSA
-// mode there is no state store — the register pointers already hold the
-// final values (the ISEL `_flat` wrappers wrote through them directly).
+// Exit-side: retarget all tail calls to `__remill_flat_jump`. Load the
+// updated register values from the REG_* allocas and pass them by-value.
 void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
                                            bool flat_ssa) const {
   auto module = func->getParent();
@@ -1893,46 +1898,39 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
   auto flat_jump = module->getFunction("__remill_flat_jump");
   CHECK(flat_jump) << "Missing __remill_flat_jump in module";
 
+  const char *kRegNames[kFlatNumRegs] = {
+      "RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+      "R8","R9","R10","R11","R12","R13","R14","R15","RIP",
+      "SS_BASE","GS_BASE","CS_BASE","FS_BASE",
+      "CF","PF","AF","ZF","SF","DF","OF",
+      "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
+      "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
+      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+  };
+
   for (auto &block : *func) {
     auto &last = block.back();
     auto ret = llvm::dyn_cast<llvm::ReturnInst>(&last);
-    if (!ret) {
-      continue;
-    }
+    if (!ret) continue;
     auto call = llvm::dyn_cast_or_null<llvm::CallInst>(ret->getReturnValue());
-    if (!call || !call->isTailCall()) {
-      continue;
-    }
+    if (!call || !call->isTailCall()) continue;
 
     llvm::IRBuilder<> ir(call);
 
-    // Old flat mode: write back the state to the register pointer args
-    // before exiting.
-    if (!flat_ssa) {
-      auto *state_alloca =
-          FindVarInFunction(func, "STATE_LOCAL", true).first;
-      if (state_alloca) {
-        auto *state_store = module->getFunction("__remill_flat_state_store");
-        if (state_store) {
-          llvm::SmallVector<llvm::Value *, 56> store_args;
-          for (size_t i = 0; i < kFlatNumRegs; ++i) {
-            store_args.push_back(
-                remill::NthArgument(func, kFlatFirstRegArgNum + i));
-          }
-          store_args.push_back(state_alloca);
-          ir.CreateCall(state_store, store_args);
-        }
-      }
-    }
-
-    // Retarget the tail call to `__remill_flat_jump`, passing pc, memory,
-    // next_pc, and the 51 register pointer arguments directly.
+    // Load updated register values from the REG_* allocas.
     llvm::SmallVector<llvm::Value *, 64> jump_args;
     jump_args.push_back(remill::NthArgument(func, kFlatPCArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatMemoryPointerArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatNextPCArgNum));
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
-      jump_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+      auto *val = FindVarInFunction(func, (std::string("REG_") + kRegNames[i]).c_str(), true).first;
+      auto *alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
+      if (alloca) {
+        jump_args.push_back(ir.CreateLoad(alloca->getAllocatedType(), alloca, "reg_out"));
+      } else {
+        // Fallback: pass the by-value arg unchanged (register not modified).
+        jump_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+      }
     }
     auto new_call = ir.CreateCall(flat_jump, jump_args);
     new_call->setTailCall(true);
