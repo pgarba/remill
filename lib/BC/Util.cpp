@@ -2313,6 +2313,28 @@ StripAndAccumulateConstantOffsets(const llvm::DataLayout &dl,
 //
 // We deliberately do NOT use the full O2 pipeline: it requires a
 // TargetMachine and, with some bundled libLLVM builds, the PassBuilder ABI
+// Fix invalid `zext ptr to i64` → `ptrtoint ptr to i64`.
+// With opaque pointers, some lifted code emits zext on pointer values
+// (valid with typed pointers, invalid with opaque). Replace with ptrtoint.
+void remill::FixZextPtrToPtrToInt(llvm::Function *func) {
+  std::vector<llvm::Instruction *> to_fix;
+  for (auto &bb : *func) {
+    for (auto &inst : bb) {
+      if (auto *zext = llvm::dyn_cast<llvm::ZExtInst>(&inst)) {
+        if (zext->getOperand(0)->getType()->isPointerTy()) {
+          to_fix.push_back(zext);
+        }
+      }
+    }
+  }
+  for (auto *zext : to_fix) {
+    auto *ptrtoint = new llvm::PtrToIntInst(
+        zext->getOperand(0), zext->getType(), "", zext);
+    zext->replaceAllUsesWith(ptrtoint);
+    zext->eraseFromParent();
+  }
+}
+
 // mismatch causes a segfault. A minimal pipeline (inliner + mem2reg + SROA)
 // with a null TargetMachine is sufficient to scalarize the local `State` and
 // is safe to run in-process.
@@ -2321,6 +2343,7 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
   if (!module || !func) {
     return nullptr;
   }
+  FixZextPtrToPtrToInt(func);
 
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
@@ -2401,6 +2424,7 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   if (!module || !func) {
     return nullptr;
   }
+  FixZextPtrToPtrToInt(func);
 
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;

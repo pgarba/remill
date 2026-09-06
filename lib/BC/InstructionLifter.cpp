@@ -385,7 +385,25 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
       auto it = impl->flat_reg_index.find(lookup_name);
       if (it != impl->flat_reg_index.end()) {
         auto *reg_arg = NthArgument(func, kFlatFirstRegArgNum + it->second);
-        reg_ptr_it->second = {reg_arg, reg_arg->getType()};
+        // Determine the value type stored at this register pointer.
+        // With opaque pointers, reg_arg->getType() is always 'ptr',
+        // but the *value* has a specific type:
+        //   0-19: GPRs + seg bases -> i64
+        //   20-26: flags -> i8
+        //   27-34: MMX -> i64
+        //   35-51: XMM -> <2 x i64>
+        auto &ctx = func->getContext();
+        llvm::Type *val_ty;
+        size_t idx = it->second;
+        if (idx >= 21 && idx <= 27) {
+          val_ty = llvm::Type::getInt8Ty(ctx);  // flags
+        } else if (idx >= 36 && idx <= 51) {
+          val_ty = llvm::FixedVectorType::get(
+              llvm::Type::getInt64Ty(ctx), 2);  // XMM vec128
+        } else {
+          val_ty = llvm::Type::getInt64Ty(ctx);  // GPRs, seg, MMX
+        }
+        reg_ptr_it->second = {reg_arg, val_ty};
         return reg_ptr_it->second;
       }
     }

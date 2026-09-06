@@ -290,6 +290,8 @@ StripAndAccumulateConstantOffsets(const llvm::DataLayout &dl,
 // directly on the register pointer arguments with no state struct.
 //
 // Returns the (modified) function, or nullptr if it was eliminated.
+void FixZextPtrToPtrToInt(llvm::Function *func);
+
 llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
                                         llvm::Function *func);
 

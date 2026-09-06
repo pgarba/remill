@@ -536,6 +536,11 @@ int main(int argc, char *argv[]) {
 
   int ret = EXIT_SUCCESS;
 
+  // Fix invalid zext-on-pointer (opaque pointer artifact).
+  for (auto &f : dest_module) {
+    remill::FixZextPtrToPtrToInt(&f);
+  }
+
   if (!g_ir_out.empty()) {
     if (!remill::StoreModuleIRToFile(&dest_module, g_ir_out, true)) {
       LOG(ERROR) << "Could not save LLVM IR to " << g_ir_out;
