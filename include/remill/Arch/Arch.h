@@ -196,20 +196,24 @@ class Arch {
                                        bool flat = false) const;
 
   // Initialize an empty lifted function with the default variables that it
-  // should contain. If `flat` is true, set up the flat-mode entry block
-  // (local `State` alloca + `__remill_flat_state_load` + variables).
+  // should contain. If `flat` is true, set up the flat-mode entry block.
+  // If `flat_ssa` is also true, skip the STATE_LOCAL alloca (pure-SSA mode).
   void InitializeEmptyLiftedFunction(llvm::Function *func,
-                                     bool flat = false) const;
+                                     bool flat = false,
+                                     bool flat_ssa = false) const;
 
-  // Finalize a flat-mode lifted function: insert the state write-back
-  // (`__remill_flat_state_store`) before each terminating tail call.
-  void FinishFlatLiftedFunction(llvm::Function *func) const;
+  // Finalize a flat-mode lifted function. In old flat mode, inserts the
+  // state write-back. In pure-SSA mode, just retargets tail calls.
+  void FinishFlatLiftedFunction(llvm::Function *func, bool flat_ssa = false)
+      const;
 
   // Flat-mode support (architecture-specific). `FlatLiftedFunctionType`
   // returns nullptr if the architecture does not support flat lifting.
   virtual llvm::FunctionType *FlatLiftedFunctionType(void) const;
-  virtual void InitializeFlatLiftedFunction(llvm::Function *func) const;
-  virtual void FinishFlatLiftedFunctionImpl(llvm::Function *func) const;
+  virtual void InitializeFlatLiftedFunction(llvm::Function *func,
+                                            bool flat_ssa = false) const;
+  virtual void FinishFlatLiftedFunctionImpl(llvm::Function *func,
+                                            bool flat_ssa = false) const;
 
   // Converts an LLVM module object to have the right triple / data layout
   // information for the target architecture and ensures remill required

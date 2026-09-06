@@ -819,8 +819,10 @@ class X86Arch final : public Arch {
 
   // Flat-mode support: `Memory *F(addr_t pc, Memory *memory, X86FlatState *)`.
   llvm::FunctionType *FlatLiftedFunctionType(void) const final;
-  void InitializeFlatLiftedFunction(llvm::Function *func) const final;
-  void FinishFlatLiftedFunctionImpl(llvm::Function *func) const final;
+  void InitializeFlatLiftedFunction(llvm::Function *func,
+                                    bool flat_ssa = false) const final;
+  void FinishFlatLiftedFunctionImpl(llvm::Function *func,
+                                    bool flat_ssa = false) const final;
 
  private:
   X86Arch(void) = delete;
@@ -1817,7 +1819,8 @@ llvm::FunctionType *X86Arch::FlatLiftedFunctionType(void) const {
 // created. The register pointer arguments ARE the register addresses.
 // We only initialize NEXT_PC from PC and set up the segment-base allocas
 // that the ISEL code expects to find by name.
-void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func) const {
+void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
+                                           bool flat_ssa) const {
   auto module = func->getParent();
   auto &context = module->getContext();
   auto block = llvm::BasicBlock::Create(context, "", func);
@@ -1835,9 +1838,26 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func) const {
   ir.CreateStore(pc_val, next_pc_ptr);
 
   // MEMORY: store the memory pointer into an alloca so that
-  // FindVarInFunction can find it by name. The ISEL code loads Memory* from
-  // this address. We use an alloca (8 bytes) instead of the full State struct.
+  // FindVarInFunction can find it by name.
   ir.CreateStore(memory, ir.CreateAlloca(impl->memory_type, nullptr, "MEMORY"));
+
+  // Old flat mode (!flat_ssa): create STATE_LOCAL alloca and call
+  // __remill_flat_state_load to populate it from the register pointer args.
+  if (!flat_ssa) {
+    auto *state_alloca = ir.CreateAlloca(impl->state_type, nullptr,
+                                         "STATE_LOCAL");
+    // Build the args for __remill_flat_state_load:
+    // (State *state, addr_t *rax, ..., vec128_t *xmm15) = 52 args
+    llvm::SmallVector<llvm::Value *, 56> load_args;
+    load_args.push_back(state_alloca);  // state
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      load_args.push_back(
+          remill::NthArgument(func, kFlatFirstRegArgNum + i));
+    }
+    auto *state_load = module->getFunction("__remill_flat_state_load");
+    CHECK(state_load) << "Missing __remill_flat_state_load";
+    ir.CreateCall(state_load, load_args);
+  }
 
   // Segment-base variables (needed by ISEL code that accesses them by name).
   ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "CSBASE"));
@@ -1855,7 +1875,8 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func) const {
 // Exit-side: retarget all tail calls to `__remill_flat_jump`. In pure-SSA
 // mode there is no state store — the register pointers already hold the
 // final values (the ISEL `_flat` wrappers wrote through them directly).
-void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func) const {
+void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
+                                           bool flat_ssa) const {
   auto module = func->getParent();
 
   auto flat_jump = module->getFunction("__remill_flat_jump");
@@ -1873,6 +1894,25 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func) const {
     }
 
     llvm::IRBuilder<> ir(call);
+
+    // Old flat mode: write back the state to the register pointer args
+    // before exiting.
+    if (!flat_ssa) {
+      auto *state_alloca =
+          FindVarInFunction(func, "STATE_LOCAL", true).first;
+      if (state_alloca) {
+        auto *state_store = module->getFunction("__remill_flat_state_store");
+        if (state_store) {
+          llvm::SmallVector<llvm::Value *, 56> store_args;
+          for (size_t i = 0; i < kFlatNumRegs; ++i) {
+            store_args.push_back(
+                remill::NthArgument(func, kFlatFirstRegArgNum + i));
+          }
+          store_args.push_back(state_alloca);
+          ir.CreateCall(state_store, store_args);
+        }
+      }
+    }
 
     // Retarget the tail call to `__remill_flat_jump`, passing pc, memory,
     // next_pc, and the 51 register pointer arguments directly.

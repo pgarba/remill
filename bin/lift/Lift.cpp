@@ -84,7 +84,8 @@ static std::string g_ir_out;
 static std::string g_bc_out;
 static std::string g_slice_inputs;
 static std::string g_slice_outputs;
-static bool g_flat = false;
+static bool g_flat = false;      // Old flat mode: STATE_LOCAL + SROA
+static bool g_flat_ssa = false;  // New pure-SSA flat mode: no struct, inline _flat ISEL
 
 using Memory = std::map<uint64_t, uint8_t>;
 
@@ -242,6 +243,9 @@ int main(int argc, char *argv[]) {
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--flat") == 0) {
       g_flat = true;
+    } else if (strcmp(argv[i], "--flat-ssa") == 0) {
+      g_flat_ssa = true;
+      g_flat = true;  // flat-ssa implies flat ABI
     }
   }
 
@@ -281,9 +285,10 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  // In flat mode, load the flat bitcode (with _flat ISEL wrappers).
+  // Load the appropriate semantics bitcode.
   std::unique_ptr<llvm::Module> module;
-  if (g_flat) {
+  if (g_flat_ssa) {
+    // Pure-SSA mode: load the flat bitcode with _flat ISEL wrappers.
     auto arch_name = remill::GetArchName(arch->arch_name);
     std::string path = remill::FindFlatSemanticsBitcodeFile(arch_name);
     llvm::outs() << "Loading " << arch_name << " flat semantics from " << path
@@ -295,6 +300,9 @@ int main(int argc, char *argv[]) {
     for (auto &func : *module) {
       remill::Annotate<remill::Semantics>(&func);
     }
+  } else if (g_flat) {
+    // Old flat mode: load original semantics (uses STATE_LOCAL + SROA).
+    module = remill::LoadArchSemantics(arch);
   } else {
     module = remill::LoadArchSemantics(arch);
   }
@@ -307,11 +315,11 @@ int main(int argc, char *argv[]) {
   remill::IntrinsicTable intrinsics(module);
   remill::InstructionLifter inst_lifter(arch, intrinsics);
 
-  // Enable pure-SSA flat mode: pointer args ARE register addresses.
-  // No state struct, no GEPs, no SROA needed.
-  inst_lifter.SetFlatMode(g_flat);
+  // Pure-SSA flat mode: pointer args ARE register addresses (no struct).
+  // Old flat mode (--flat): uses STATE_LOCAL + SROA.
+  inst_lifter.SetFlatMode(g_flat_ssa);
 
-  remill::TraceLifter trace_lifter(inst_lifter, manager, g_flat);
+  remill::TraceLifter trace_lifter(inst_lifter, manager, g_flat, g_flat_ssa);
 
   // Lift all discoverable traces starting from `--entry_address` into
   // `module`.
@@ -322,8 +330,13 @@ int main(int argc, char *argv[]) {
   remill::OptimizationGuide guide = {};
   remill::OptimizeModule(arch, module, manager.traces, guide);
 
-  // No SROA needed in pure-SSA flat mode: there is no state struct to
-  // scalarize. The ISEL _flat wrappers were pre-scalarized at build time.
+  // Old flat mode: scalarize the STATE_LOCAL alloca with SROA.
+  // Pure-SSA mode: no SROA needed (no state struct).
+  if (g_flat && !g_flat_ssa) {
+    for (auto &lifted_entry : manager.traces) {
+      remill::ScalarizeFlatFunction(module.get(), lifted_entry.second);
+    }
+  }
 
 
   // Create a new module in which we will move all the lifted functions. Prepare
@@ -349,9 +362,9 @@ int main(int argc, char *argv[]) {
       entry_trace = lifted_entry.second;
     }
 
-    // In flat mode, inline the _flat ISEL calls into the lifted function
-    // so the output is self-contained (no external ISEL references).
-    if (g_flat) {
+    // In pure-SSA flat mode, inline the _flat ISEL calls into the lifted
+    // function so the output is self-contained (no external ISEL references).
+    if (g_flat_ssa) {
       auto *func = lifted_entry.second;
       // Collect all non-tail calls to defined functions (the _flat wrappers).
       llvm::SmallVector<llvm::CallBase *, 16> calls;

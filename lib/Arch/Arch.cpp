@@ -683,10 +683,11 @@ llvm::Function *Arch::DefineLiftedFunction(std::string_view name_,
 // Initialize an empty lifted function with the default variables that it
 // should contain.
 void Arch::InitializeEmptyLiftedFunction(llvm::Function *func,
-                                         bool flat) const {
+                                         bool flat,
+                                         bool flat_ssa) const {
   CHECK(func->isDeclaration());
   if (flat) {
-    InitializeFlatLiftedFunction(func);
+    InitializeFlatLiftedFunction(func, flat_ssa);
     return;
   }
   auto module = func->getParent();
@@ -717,8 +718,9 @@ void Arch::InitializeEmptyLiftedFunction(llvm::Function *func,
 
 // Finalize a flat-mode lifted function: insert the state write-back before
 // each terminating tail call.
-void Arch::FinishFlatLiftedFunction(llvm::Function *func) const {
-  FinishFlatLiftedFunctionImpl(func);
+void Arch::FinishFlatLiftedFunction(llvm::Function *func, bool flat_ssa)
+    const {
+  FinishFlatLiftedFunctionImpl(func, flat_ssa);
 }
 
 // Base implementations of the flat-mode hooks. Architectures that do not
@@ -726,8 +728,8 @@ void Arch::FinishFlatLiftedFunction(llvm::Function *func) const {
 llvm::FunctionType *Arch::FlatLiftedFunctionType(void) const {
   return nullptr;
 }
-void Arch::InitializeFlatLiftedFunction(llvm::Function *) const {}
-void Arch::FinishFlatLiftedFunctionImpl(llvm::Function *) const {}
+void Arch::InitializeFlatLiftedFunction(llvm::Function *, bool) const {}
+void Arch::FinishFlatLiftedFunctionImpl(llvm::Function *, bool) const {}
 
 void Arch::PrepareModule(llvm::Module *mod) const {
   PrepareModuleDataLayout(mod);

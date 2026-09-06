@@ -62,8 +62,10 @@ using DecoderWorkList = std::set<uint64_t>;  // For ordering.
 
 class TraceLifter::Impl {
  public:
-  Impl(InstructionLifter *inst_lifter_, TraceManager *manager_, bool flat_);
+  Impl(InstructionLifter *inst_lifter_, TraceManager *manager_, bool flat_,
+       bool flat_ssa_);
   bool flat;
+  bool flat_ssa;
 
   // Lift one or more traces starting from `addr`. Calls `callback` with each
   // lifted trace.
@@ -147,8 +149,9 @@ class TraceLifter::Impl {
 };
 
 TraceLifter::Impl::Impl(InstructionLifter *inst_lifter_, TraceManager *manager_,
-                        bool flat_)
+                        bool flat_, bool flat_ssa_)
     : flat(flat_),
+      flat_ssa(flat_ssa_),
       arch(inst_lifter_->impl->arch),
       inst_lifter(*inst_lifter_),
       intrinsics(inst_lifter.impl->intrinsics),
@@ -209,8 +212,9 @@ TraceLifter::~TraceLifter(void) {}
 
 TraceLifter::TraceLifter(InstructionLifter *inst_lifter_,
                          TraceManager *manager_,
-                         bool flat)
-    : impl(new Impl(inst_lifter_, manager_, flat)) {}
+                         bool flat,
+                         bool flat_ssa)
+    : impl(new Impl(inst_lifter_, manager_, flat, flat_ssa)) {}
 
 void TraceLifter::NullCallback(uint64_t, llvm::Function *) {}
 
@@ -299,15 +303,18 @@ bool TraceLifter::Impl::Lift(
     // Fill in the function, and make sure the block with all register
     // variables jumps to the block that will contain the first instruction
     // of the trace.
-    arch->InitializeEmptyLiftedFunction(func, flat);
+    arch->InitializeEmptyLiftedFunction(func, flat, flat_ssa);
 
-    // In pure-SSA flat mode, there is no state struct. The pointer args are
-    // the register addresses. state_ptr is nullptr; LoadRegAddress uses the
-    // flat register map to return pointer args directly.
-    // In old mode, it's the function argument.
+    // In pure-SSA flat mode (flat_ssa), there is no state struct. The
+    // pointer args ARE the register addresses. state_ptr is nullptr.
+    // In old flat mode (flat, !flat_ssa), state_ptr is the STATE_LOCAL alloca.
+    // In original mode (!flat), state_ptr is the function argument.
     llvm::Value *state_ptr;
-    if (flat) {
+    if (flat_ssa) {
       state_ptr = nullptr;  // Pure-SSA: no state struct.
+    } else if (flat) {
+      state_ptr = FindVarInFunction(func, "STATE_LOCAL", true).first;
+      CHECK(state_ptr) << "Missing STATE_LOCAL in flat function";
     } else {
       state_ptr = NthArgument(func, kStatePointerArgNum);
     }
@@ -679,7 +686,7 @@ bool TraceLifter::Impl::Lift(
     // In flat mode, retarget all tail calls to __remill_flat_jump and
     // insert __remill_flat_state_store before each one.
     if (flat) {
-      arch->FinishFlatLiftedFunction(func);
+      arch->FinishFlatLiftedFunction(func, flat_ssa);
     }
 
     callback(trace_addr, func);
