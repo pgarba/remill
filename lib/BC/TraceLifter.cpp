@@ -151,7 +151,7 @@ class TraceLifter::Impl {
 TraceLifter::Impl::Impl(InstructionLifter *inst_lifter_, TraceManager *manager_,
                         bool flat_, bool flat_ssa_)
     : flat(flat_),
-      flat_ssa(flat_ssa_),
+      flat_ssa(flat_),  // flat_ssa is always the same as flat (old mode removed)
       arch(inst_lifter_->impl->arch),
       inst_lifter(*inst_lifter_),
       intrinsics(inst_lifter.impl->intrinsics),
