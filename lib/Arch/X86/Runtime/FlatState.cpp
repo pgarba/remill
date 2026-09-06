@@ -232,20 +232,20 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
 // the memory pointer unchanged (mirrors `__remill_jump` in saturn_helpers.cpp).
 extern "C" Memory *__remill_flat_jump(
     addr_t *pc, Memory *memory, addr_t *next_pc,
-    addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
-    addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,
-    addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
-    addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
-    addr_t *rip,
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
-    uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
-    uint8_t *sf, uint8_t *df, uint8_t *of,
-    uint64_t *mm0, uint64_t *mm1, uint64_t *mm2, uint64_t *mm3,
-    uint64_t *mm4, uint64_t *mm5, uint64_t *mm6, uint64_t *mm7,
-    vec128_t *xmm0, vec128_t *xmm1, vec128_t *xmm2, vec128_t *xmm3,
-    vec128_t *xmm4, vec128_t *xmm5, vec128_t *xmm6, vec128_t *xmm7,
-    vec128_t *xmm8, vec128_t *xmm9, vec128_t *xmm10, vec128_t *xmm11,
-    vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15) {
+    addr_t rax, addr_t rbx, addr_t rcx, addr_t rdx,
+    addr_t rsi, addr_t rdi, addr_t rsp, addr_t rbp,
+    addr_t r8, addr_t r9, addr_t r10, addr_t r11,
+    addr_t r12, addr_t r13, addr_t r14, addr_t r15,
+    addr_t rip,
+    addr_t ss_base, addr_t gs_base, addr_t cs_base, addr_t fs_base,
+    uint8_t cf, uint8_t pf, uint8_t af, uint8_t zf,
+    uint8_t sf, uint8_t df, uint8_t of,
+    uint64_t mm0, uint64_t mm1, uint64_t mm2, uint64_t mm3,
+    uint64_t mm4, uint64_t mm5, uint64_t mm6, uint64_t mm7,
+    vec128_t xmm0, vec128_t xmm1, vec128_t xmm2, vec128_t xmm3,
+    vec128_t xmm4, vec128_t xmm5, vec128_t xmm6, vec128_t xmm7,
+    vec128_t xmm8, vec128_t xmm9, vec128_t xmm10, vec128_t xmm11,
+    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15) {
   (void)pc; (void)next_pc;
   (void)rax; (void)rbx; (void)rcx; (void)rdx;
   (void)rsi; (void)rdi; (void)rsp; (void)rbp;

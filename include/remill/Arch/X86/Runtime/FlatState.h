@@ -107,25 +107,28 @@ enum : unsigned { kX86FlatStateNumFields = 17 + 4 + 7 + 8 + 16 };
 // Implemented by the remill runtime (a separate component); declared here so
 // the flat lifter can emit a tail call to it.
 #if 64 == ADDRESS_SIZE_BITS
+// ABI v2: registers are passed by value. PC/NEXT_PC remain pointers (threaded
+// between blocks). The runtime stores the by-value register args into the
+// caller's state and dispatches to the next block.
 extern "C" Memory *__remill_flat_jump(
     addr_t *pc, Memory *memory, addr_t *next_pc,
-    // 17 GPRs.
-    addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
-    addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,
-    addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
-    addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
-    addr_t *rip,
-    // 4 segment bases.
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
-    // 7 flags.
-    uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
-    uint8_t *sf, uint8_t *df, uint8_t *of,
-    // 8 MMX.
-    uint64_t *mm0, uint64_t *mm1, uint64_t *mm2, uint64_t *mm3,
-    uint64_t *mm4, uint64_t *mm5, uint64_t *mm6, uint64_t *mm7,
-    // 16 XMM.
-    vec128_t *xmm0, vec128_t *xmm1, vec128_t *xmm2, vec128_t *xmm3,
-    vec128_t *xmm4, vec128_t *xmm5, vec128_t *xmm6, vec128_t *xmm7,
-    vec128_t *xmm8, vec128_t *xmm9, vec128_t *xmm10, vec128_t *xmm11,
-    vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15);
+    // 17 GPRs (by value).
+    addr_t rax, addr_t rbx, addr_t rcx, addr_t rdx,
+    addr_t rsi, addr_t rdi, addr_t rsp, addr_t rbp,
+    addr_t r8, addr_t r9, addr_t r10, addr_t r11,
+    addr_t r12, addr_t r13, addr_t r14, addr_t r15,
+    addr_t rip,
+    // 4 segment bases (by value).
+    addr_t ss_base, addr_t gs_base, addr_t cs_base, addr_t fs_base,
+    // 7 flags (by value).
+    uint8_t cf, uint8_t pf, uint8_t af, uint8_t zf,
+    uint8_t sf, uint8_t df, uint8_t of,
+    // 8 MMX (by value).
+    uint64_t mm0, uint64_t mm1, uint64_t mm2, uint64_t mm3,
+    uint64_t mm4, uint64_t mm5, uint64_t mm6, uint64_t mm7,
+    // 16 XMM (by value).
+    vec128_t xmm0, vec128_t xmm1, vec128_t xmm2, vec128_t xmm3,
+    vec128_t xmm4, vec128_t xmm5, vec128_t xmm6, vec128_t xmm7,
+    vec128_t xmm8, vec128_t xmm9, vec128_t xmm10, vec128_t xmm11,
+    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15);
 #endif  // 64 == ADDRESS_SIZE_BITS
