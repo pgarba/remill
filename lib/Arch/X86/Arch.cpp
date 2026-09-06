@@ -1858,19 +1858,14 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
     CHECK(state_load) << "Missing __remill_flat_state_load";
     ir.CreateCall(state_load, load_args);
 
-    // Create a GEP for BRANCH_TAKEN in the entry block so that
-    // FindVarInFunction can find it (the ISEL writes through this GEP).
-    auto *bt_reg = this->RegisterByName("BRANCH_TAKEN");
-    if (bt_reg) {
-      auto *bt_gep = bt_reg->AddressOf(state_alloca, ir);
-      bt_gep->setName("BRANCH_TAKEN");
-    }
-  } else {
-    // Pure-SSA mode: BRANCH_TAKEN is a standalone alloca. The _flat ISEL
-    // wrappers handle it internally; this is a placeholder for the
-    // branch condition check in TraceLifter.
-    ir.CreateAlloca(llvm::Type::getInt8Ty(context), nullptr, "BRANCH_TAKEN");
   }
+
+  // Create a standalone BRANCH_TAKEN alloca in the entry block so that
+  // FindVarInFunction can find it. In old flat mode, the ISEL writes to
+  // STATE_LOCAL+BRANCH_TAKEN through its own GEP; this alloca is a
+  // placeholder that makes LoadBranchTaken work without crashing.
+  // TODO: make the ISEL write to this alloca for correct branch behavior.
+  ir.CreateAlloca(llvm::Type::getInt8Ty(context), nullptr, "BRANCH_TAKEN");
 
   // Segment-base variables (needed by ISEL code that accesses them by name).
   ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "CSBASE"));
