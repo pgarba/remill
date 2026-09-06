@@ -67,7 +67,10 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
     vec128_t *xmm0, vec128_t *xmm1, vec128_t *xmm2, vec128_t *xmm3,
     vec128_t *xmm4, vec128_t *xmm5, vec128_t *xmm6, vec128_t *xmm7,
     vec128_t *xmm8, vec128_t *xmm9, vec128_t *xmm10, vec128_t *xmm11,
-    vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15) {
+    vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15,
+    // 8 X87 ST (i128 = 16 bytes, same size as FPUStackElem).
+    __int128 *st0, __int128 *st1, __int128 *st2, __int128 *st3,
+    __int128 *st4, __int128 *st5, __int128 *st6, __int128 *st7) {
 
   // General purpose registers.
   state->gpr.rax.qword = *rax;
@@ -140,6 +143,16 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
   state->vec[13].xmm.dqwords.elems[0] = xmm13->dqwords.elems[0];
   state->vec[14].xmm.dqwords.elems[0] = xmm14->dqwords.elems[0];
   state->vec[15].xmm.dqwords.elems[0] = xmm15->dqwords.elems[0];
+
+  // X87 ST registers. FPUStackElem is 16 bytes, same as __int128.
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[0]) = *st0;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[1]) = *st1;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[2]) = *st2;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[3]) = *st3;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[4]) = *st4;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[5]) = *st5;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[6]) = *st6;
+  *reinterpret_cast<__int128 *>(&state->x87.fxsave.st[7]) = *st7;
 }
 
 // Exit-side mapping: write the final local `State` back through the
@@ -164,6 +177,9 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
     vec128_t *xmm4, vec128_t *xmm5, vec128_t *xmm6, vec128_t *xmm7,
     vec128_t *xmm8, vec128_t *xmm9, vec128_t *xmm10, vec128_t *xmm11,
     vec128_t *xmm12, vec128_t *xmm13, vec128_t *xmm14, vec128_t *xmm15,
+    // 8 X87 ST (i128 = 16 bytes, same size as FPUStackElem).
+    __int128 *st0, __int128 *st1, __int128 *st2, __int128 *st3,
+    __int128 *st4, __int128 *st5, __int128 *st6, __int128 *st7,
     // State (last argument).
     const State *state) {
 
@@ -224,6 +240,16 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
   xmm13->dqwords.elems[0] = state->vec[13].xmm.dqwords.elems[0];
   xmm14->dqwords.elems[0] = state->vec[14].xmm.dqwords.elems[0];
   xmm15->dqwords.elems[0] = state->vec[15].xmm.dqwords.elems[0];
+
+  // X87 ST registers.
+  *st0 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[0]);
+  *st1 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[1]);
+  *st2 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[2]);
+  *st3 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[3]);
+  *st4 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[4]);
+  *st5 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[5]);
+  *st6 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[6]);
+  *st7 = *reinterpret_cast<const __int128 *>(&state->x87.fxsave.st[7]);
 }
 
 // Minimal no-op implementation of `__remill_flat_jump` for single-block
@@ -245,7 +271,15 @@ extern "C" Memory *__remill_flat_jump(
     vec128_t xmm0, vec128_t xmm1, vec128_t xmm2, vec128_t xmm3,
     vec128_t xmm4, vec128_t xmm5, vec128_t xmm6, vec128_t xmm7,
     vec128_t xmm8, vec128_t xmm9, vec128_t xmm10, vec128_t xmm11,
-    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15) {
+    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15,
+    uint64_t st0_lo, uint64_t st0_hi,
+    uint64_t st1_lo, uint64_t st1_hi,
+    uint64_t st2_lo, uint64_t st2_hi,
+    uint64_t st3_lo, uint64_t st3_hi,
+    uint64_t st4_lo, uint64_t st4_hi,
+    uint64_t st5_lo, uint64_t st5_hi,
+    uint64_t st6_lo, uint64_t st6_hi,
+    uint64_t st7_lo, uint64_t st7_hi) {
   (void)pc; (void)next_pc;
   (void)rax; (void)rbx; (void)rcx; (void)rdx;
   (void)rsi; (void)rdi; (void)rsp; (void)rbp;
@@ -261,6 +295,10 @@ extern "C" Memory *__remill_flat_jump(
   (void)xmm4; (void)xmm5; (void)xmm6; (void)xmm7;
   (void)xmm8; (void)xmm9; (void)xmm10; (void)xmm11;
   (void)xmm12; (void)xmm13; (void)xmm14; (void)xmm15;
+  (void)st0_lo; (void)st0_hi; (void)st1_lo; (void)st1_hi;
+  (void)st2_lo; (void)st2_hi; (void)st3_lo; (void)st3_hi;
+  (void)st4_lo; (void)st4_hi; (void)st5_lo; (void)st5_hi;
+  (void)st6_lo; (void)st6_hi; (void)st7_lo; (void)st7_hi;
   return memory;
 }
 

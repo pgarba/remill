@@ -130,5 +130,14 @@ extern "C" Memory *__remill_flat_jump(
     vec128_t xmm0, vec128_t xmm1, vec128_t xmm2, vec128_t xmm3,
     vec128_t xmm4, vec128_t xmm5, vec128_t xmm6, vec128_t xmm7,
     vec128_t xmm8, vec128_t xmm9, vec128_t xmm10, vec128_t xmm11,
-    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15);
+    vec128_t xmm12, vec128_t xmm13, vec128_t xmm14, vec128_t xmm15,
+    // 8 X87 ST (by value, i128 = 80-bit float80 padded to 128 bits).
+    uint64_t st0_lo, uint64_t st0_hi,
+    uint64_t st1_lo, uint64_t st1_hi,
+    uint64_t st2_lo, uint64_t st2_hi,
+    uint64_t st3_lo, uint64_t st3_hi,
+    uint64_t st4_lo, uint64_t st4_hi,
+    uint64_t st5_lo, uint64_t st5_hi,
+    uint64_t st6_lo, uint64_t st6_hi,
+    uint64_t st7_lo, uint64_t st7_hi);
 #endif  // 64 == ADDRESS_SIZE_BITS

@@ -1948,9 +1948,7 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
     jump_args.push_back(remill::NthArgument(func, kFlatPCArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatMemoryPointerArgNum));
     jump_args.push_back(remill::NthArgument(func, kFlatNextPCArgNum));
-    // Jump function supports 52 regs (X87 ST not yet in jump signature).
-    static constexpr size_t kJumpNumRegs = 52;
-    for (size_t i = 0; i < kJumpNumRegs && i < kFlatNumRegs; ++i) {
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto *val = FindVarInFunction(func, (std::string("REG_") + kRegNames[i]).c_str(), true).first;
       auto *alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
       if (alloca) {

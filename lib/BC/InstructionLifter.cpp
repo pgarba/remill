@@ -242,12 +242,18 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
         "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
         "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
     };
-    // The _flat ISEL wrapper supports 52 registers (GPR+seg+flags+MMX+XMM).
-    // X87 ST(0-7) (indices 52-59) are in the ABI but not yet wired into
-    // the ISEL wrapper. Full X87 support requires regenerating flat bitcode.
-    static constexpr size_t kIselWrapperNumRegs = 52;
-    for (size_t i = 0; i < kIselWrapperNumRegs && i < kFlatNumRegs; ++i) {
-      auto reg_name_str = (std::string("REG_") + kRegNames52[i]).c_str();
+    // The _flat ISEL wrapper supports 60 registers (including X87 ST).
+    static const char *kRegNames60[] = {
+      "RAX","RBX","RCX","RDX","RSI","RDI","RSP","RBP",
+      "R8","R9","R10","R11","R12","R13","R14","R15","RIP",
+      "SS_BASE","GS_BASE","CS_BASE","FS_BASE",
+      "CF","PF","AF","ZF","SF","DF","OF",
+      "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
+      "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
+      "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
+      "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"};
+    for (size_t i = 0; i < kFlatNumRegs; ++i) {
+      auto reg_name_str = (std::string("REG_") + kRegNames60[i]).c_str();
       auto *val = FindVarInFunction(func, reg_name_str, true).first;
       auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
       if (reg_alloca) {
