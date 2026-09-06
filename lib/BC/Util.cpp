@@ -2333,6 +2333,34 @@ void remill::FixZextPtrToPtrToInt(llvm::Function *func) {
     zext->replaceAllUsesWith(ptrtoint);
     zext->eraseFromParent();
   }
+
+  // Inline trivial __remill_compare_* calls (1-arg i1→i1 identity/NOT).
+  for (auto &bb : *func) {
+    std::vector<llvm::CallInst *> to_inline;
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call || !call->getCalledFunction()) continue;
+      auto name = call->getCalledFunction()->getName();
+      if (name.starts_with("__remill_compare_")) {
+        to_inline.push_back(call);
+      }
+    }
+    for (auto *call : to_inline) {
+      auto name = call->getCalledFunction()->getName();
+      if (name.ends_with("neq")) {
+        // __remill_compare_neq(x) = !x
+        auto *xor_inst = llvm::BinaryOperator::CreateXor(
+            call->getArgOperand(0),
+            llvm::ConstantInt::getTrue(call->getArgOperand(0)->getType()),
+            "", call);
+        call->replaceAllUsesWith(xor_inst);
+      } else {
+        // identity: __remill_compare_eq/ult/ule/ugt/uge/sgt(x) = x
+        call->replaceAllUsesWith(call->getArgOperand(0));
+      }
+      call->eraseFromParent();
+    }
+  }
 }
 
 // mismatch causes a segfault. A minimal pipeline (inliner + mem2reg + SROA)
