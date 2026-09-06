@@ -41,6 +41,8 @@
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Passes/PassBuilder.h>
 
 #include "remill/BC/Util.h"
 
@@ -285,6 +287,32 @@ int main(int argc, char **argv) {
     out.close();
     fprintf(stderr, "Wrote pre-SROA bitcode to %s\n", pre_sroa_path.c_str());
   }
+
+  // Run the always-inliner pass to inline __remill_flat_state_load/store
+  // into the flat wrappers. These functions are marked `alwaysinline` and
+  // have bodies in the bitcode, but the InlineFunction API (used by
+  // ScalarizeFlatFunction) refuses 53-arg functions. The inliner PASS
+  // honors alwaysinline and forces the inlining.
+  fprintf(stderr, "Running always-inliner (inlining state_load/store)...\n");
+  fflush(stderr);
+  {
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    llvm::PassBuilder pb(/*TM=*/nullptr, llvm::PipelineTuningOptions(),
+                         std::nullopt, /*PIC=*/nullptr);
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::AlwaysInlinerPass());
+    mpm.run(*module, mam);
+  }
+  fflush(stderr);
 
   // Run SROA once over the whole module. This scalarizes the local State in
   // ALL flat wrappers at once (the inliner + mem2reg + SROA run over the whole
