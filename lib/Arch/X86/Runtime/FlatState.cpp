@@ -55,8 +55,8 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
-    // 3 segment bases.
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base,
+    // 4 segment bases.
+    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
     // 7 flags.
     uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
     uint8_t *sf, uint8_t *df, uint8_t *of,
@@ -92,6 +92,7 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
   state->addr.ss_base.qword = *ss_base;
   state->addr.gs_base.qword = *gs_base;
   state->addr.cs_base.qword = *cs_base;
+  state->addr.fs_base.qword = *fs_base;
 
   // Flags.
   state->aflag.cf = *cf;
@@ -150,8 +151,8 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
-    // 3 segment bases.
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base,
+    // 4 segment bases.
+    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
     // 7 flags.
     uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
     uint8_t *sf, uint8_t *df, uint8_t *of,
@@ -187,6 +188,7 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
   *ss_base = state->addr.ss_base.qword;
   *gs_base = state->addr.gs_base.qword;
   *cs_base = state->addr.cs_base.qword;
+  *fs_base = state->addr.fs_base.qword;
 
   *cf = state->aflag.cf;
   *pf = state->aflag.pf;
@@ -235,7 +237,7 @@ extern "C" Memory *__remill_flat_jump(
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base,
+    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
     uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
     uint8_t *sf, uint8_t *df, uint8_t *of,
     uint64_t *mm0, uint64_t *mm1, uint64_t *mm2, uint64_t *mm3,
@@ -250,7 +252,7 @@ extern "C" Memory *__remill_flat_jump(
   (void)r8; (void)r9; (void)r10; (void)r11;
   (void)r12; (void)r13; (void)r14; (void)r15;
   (void)rip;
-  (void)ss_base; (void)gs_base; (void)cs_base;
+  (void)ss_base; (void)gs_base; (void)cs_base; (void)fs_base;
   (void)cf; (void)pf; (void)af; (void)zf;
   (void)sf; (void)df; (void)of;
   (void)mm0; (void)mm1; (void)mm2; (void)mm3;

@@ -3,7 +3,7 @@
 // For each ISEL opcode `F(memory, State*, operands...)` in the bitcode,
 // synthesize a flat wrapper `F_flat(memory, reg_0..reg_50, operands...)` that:
 //   1. Allocates a local `State`.
-//   2. Calls `__remill_flat_state_load` to materialize it from the 51 reg
+//   2. Calls `__remill_flat_state_load` to materialize it from the 52 reg
 //      pointers.
 //   3. Inlines the original opcode body (passing the local State + operands),
 //      capturing the returned memory pointer.
@@ -46,14 +46,14 @@
 
 using namespace llvm;
 
-// The canonical flat register order (51 registers).
+// The canonical flat register order (52 registers).
 // 17 GPRs, 3 seg bases, 7 flags, 8 MMX, 16 XMM.
-static const char *kFlatRegNames[51] = {
+static const char *kFlatRegNames[52] = {
     // 17 GPRs.
     "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp",
     "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
-    // 3 seg bases.
-    "ss_base", "gs_base", "cs_base",
+    // 4 seg bases.
+    "ss_base", "gs_base", "cs_base", "fs_base",
     // 7 flags.
     "cf", "pf", "af", "zf", "sf", "df", "of",
     // 8 MMX.
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
     auto isel_type = isel->getFunctionType();
     std::vector<Type *> param_types;
     param_types.push_back(ptr_ty);  // memory
-    for (int i = 0; i < 51; ++i) {
+    for (int i = 0; i < 52; ++i) {
       param_types.push_back(ptr_ty);  // reg_0..reg_50
     }
     // The original operands (skip the first 2 args: memory, state).
@@ -191,8 +191,8 @@ int main(int argc, char **argv) {
     // Get the arguments.
     auto arg_it = flat_func->arg_begin();
     auto *memory_arg = &*arg_it++;  // %memory
-    std::vector<Argument *> reg_args(51);
-    for (int i = 0; i < 51; ++i) {
+    std::vector<Argument *> reg_args(52);
+    for (int i = 0; i < 52; ++i) {
       reg_args[i] = &*arg_it++;
     }
     std::vector<Argument *> operand_args;
@@ -207,7 +207,7 @@ int main(int argc, char **argv) {
     // register pointers.
     std::vector<Value *> load_args;
     load_args.push_back(state_alloca);  // state
-    for (int i = 0; i < 51; ++i) {
+    for (int i = 0; i < 52; ++i) {
       load_args.push_back(reg_args[i]);
     }
     ir.CreateCall(flat_load, load_args);
@@ -250,7 +250,7 @@ int main(int argc, char **argv) {
     // The `ret` is the last instruction in the entry block.
     ir.SetInsertPoint(ret_inst);
     std::vector<Value *> store_args;
-    for (int i = 0; i < 51; ++i) {
+    for (int i = 0; i < 52; ++i) {
       store_args.push_back(reg_args[i]);
     }
     store_args.push_back(state_alloca);  // state (last argument)

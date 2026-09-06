@@ -133,21 +133,21 @@ class InstructionLifter::Impl {
     // RIP (16): EIP
     flat_reg_index["EIP"] = 16;
 
-    // 3 seg bases (names match Arch register names: no underscore).
-    const char *seg_names[] = {"SSBASE","GSBASE","CSBASE"};
-    for (size_t i = 0; i < 3; ++i) flat_reg_index[seg_names[i]] = 17 + i;
+    // 4 seg bases (names match Arch register names: no underscore).
+    const char *seg_names[] = {"SSBASE","GSBASE","CSBASE","FSBASE"};
+    for (size_t i = 0; i < 4; ++i) flat_reg_index[seg_names[i]] = 17 + i;
     // 7 flags.
     const char *flag_names[] = {"CF","PF","AF","ZF","SF","DF","OF"};
-    for (size_t i = 0; i < 7; ++i) flat_reg_index[flag_names[i]] = 20 + i;
+    for (size_t i = 0; i < 7; ++i) flat_reg_index[flag_names[i]] = 21 + i;
     // 8 MMX.
     for (int i = 0; i < 8; ++i) {
       std::string name = "MM" + std::to_string(i);
-      flat_reg_index[name] = 27 + i;
+      flat_reg_index[name] = 28 + i;
     }
     // 16 XMM.
     for (int i = 0; i < 16; ++i) {
       std::string name = "XMM" + std::to_string(i);
-      flat_reg_index[name] = 35 + i;
+      flat_reg_index[name] = 36 + i;
     }
   }
 };

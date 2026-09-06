@@ -67,6 +67,7 @@ struct X86FlatState {
   addr_t ss_base;
   addr_t gs_base;
   addr_t cs_base;
+  addr_t fs_base;
 
   // Arithmetic flags (byte mirror of the packed RFLAGS).
   uint8_t cf;
@@ -93,7 +94,7 @@ struct X86FlatState {
 
 // Number of register fields carried across a flat boundary (everything in
 // `X86FlatState`).
-enum : unsigned { kX86FlatStateNumFields = 16 + 3 + 7 + 8 + 16 };
+enum : unsigned { kX86FlatStateNumFields = 17 + 4 + 7 + 8 + 16 };
 
 // Flat-mode jump. Unlike `__remill_jump` (which takes a `State &`), this takes
 // the lifted function's register pointer arguments *directly* -- the same 51
@@ -114,8 +115,8 @@ extern "C" Memory *__remill_flat_jump(
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
-    // 3 segment bases.
-    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base,
+    // 4 segment bases.
+    addr_t *ss_base, addr_t *gs_base, addr_t *cs_base, addr_t *fs_base,
     // 7 flags.
     uint8_t *cf, uint8_t *pf, uint8_t *af, uint8_t *zf,
     uint8_t *sf, uint8_t *df, uint8_t *of,

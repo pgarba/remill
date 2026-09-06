@@ -1780,8 +1780,9 @@ static const FlatReg kFlatRegs[] = {
     {"r8", nullptr},  {"r9", nullptr},  {"r10", nullptr}, {"r11", nullptr},
     {"r12", nullptr}, {"r13", nullptr}, {"r14", nullptr}, {"r15", nullptr},
     {"rip", nullptr},
-    // 3 segment bases.
+    // 4 segment bases.
     {"ss_base", nullptr}, {"gs_base", nullptr}, {"cs_base", nullptr},
+    {"fs_base", nullptr},
     // 7 flags.
     {"cf", nullptr}, {"pf", nullptr}, {"af", nullptr}, {"zf", nullptr},
     {"sf", nullptr}, {"df", nullptr}, {"of", nullptr},
@@ -1873,6 +1874,8 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "SSBASE"));
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "ESBASE"));
     ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "DSBASE"));
+    ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "GSBASE"));
+    ir.CreateStore(zero_addr_val, ir.CreateAlloca(addr, nullptr, "FSBASE"));
   }
 
   // RETURN_PC and MONITOR: needed by RET/branch handling in TraceLifter.

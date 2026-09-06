@@ -45,8 +45,8 @@ enum : size_t {
   kFlatMemoryPointerArgNum = 1,  // Memory *memory (by value)
   kFlatNextPCArgNum = 2,         // addr_t *next_pc
   kFlatFirstRegArgNum = 3,       // first register pointer
-  kFlatNumRegs = 17 + 3 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
-  kNumFlatBlockArgs = 3 + (17 + 3 + 7 + 8 + 16)  // pc + mem + next_pc + regs
+  kFlatNumRegs = 17 + 4 + 7 + 8 + 16,  // GPRs + seg bases + flags + MMX + XMM
+  kNumFlatBlockArgs = 3 + (17 + 4 + 7 + 8 + 16)  // pc + mem + next_pc + regs
 };
 
 extern const std::string_view kMemoryVariableName;

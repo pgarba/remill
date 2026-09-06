@@ -635,8 +635,8 @@ llvm::Function *Arch::DeclareLiftedFunction(std::string_view name_,
         // 17 GPRs
         "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RSP", "RBP",
         "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RIP",
-        // 3 segment bases
-        "SS_BASE", "GS_BASE", "CS_BASE",
+        // 4 segment bases
+        "SS_BASE", "GS_BASE", "CS_BASE", "FS_BASE",
         // 7 flags
         "CF", "PF", "AF", "ZF", "SF", "DF", "OF",
         // 8 MMX
