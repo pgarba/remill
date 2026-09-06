@@ -1860,11 +1860,29 @@ void X86Arch::InitializeFlatLiftedFunction(llvm::Function *func,
       "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
       "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
   };
+  llvm::SmallVector<llvm::AllocaInst *, 52> reg_allocas;
   for (size_t i = 0; i < kFlatNumRegs; ++i) {
     auto *reg_arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
     auto *alloca = ir.CreateAlloca(reg_arg->getType(), nullptr,
                                    llvm::Twine("REG_") + kRegNames[i]);
     ir.CreateStore(reg_arg, alloca);
+    reg_allocas.push_back(alloca);
+  }
+
+  // Old flat mode (!flat_ssa): also create STATE_LOCAL and populate it via
+  // __remill_flat_state_load (passing the REG_* allocas as pointers). This
+  // is needed by the TraceLifter which looks up STATE_LOCAL by name.
+  if (!flat_ssa) {
+    auto *state_alloca = ir.CreateAlloca(impl->state_type, nullptr,
+                                         "STATE_LOCAL");
+    llvm::SmallVector<llvm::Value *, 56> load_args;
+    load_args.push_back(state_alloca);
+    for (auto *ra : reg_allocas) {
+      load_args.push_back(ra);
+    }
+    auto *state_load = module->getFunction("__remill_flat_state_load");
+    CHECK(state_load) << "Missing __remill_flat_state_load";
+    ir.CreateCall(state_load, load_args);
   }
 
   // Create a standalone BRANCH_TAKEN alloca in the entry block so that
