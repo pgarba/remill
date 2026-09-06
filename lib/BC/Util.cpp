@@ -2481,22 +2481,20 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
     }
   }
 
-  if (has_cond_branch) {
-    // Skip all optimization for functions with conditional branches.
-    // LLVM 21 has an assertion bug (CmpInst::getFlippedStrictnessPredicate)
-    // triggered by the inlined ISEL flag arithmetic + conditional branch.
-    // The unoptimized output is still correct, just larger.
-    return module->getFunction(func->getName());
+  // Run optimization. For branch functions, skip SROA (LLVM 21 assertion
+  // bug) but still run instcombine/simplifycfg/DCE to reduce size.
+  for (int iter = 0; iter < 3; ++iter) {
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(llvm::PromotePass());  // mem2reg
+    if (!has_cond_branch) {
+      fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+    }
+    fpm.addPass(llvm::InstCombinePass());
+    fpm.addPass(llvm::SimplifyCFGPass());
+    fpm.addPass(llvm::DCEPass());
+    fpm.addPass(llvm::InstCombinePass());
+    fpm.run(*func, fam);
   }
-
-  llvm::FunctionPassManager fpm;
-  fpm.addPass(llvm::PromotePass());  // mem2reg
-  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
-  fpm.addPass(llvm::InstCombinePass());
-  fpm.addPass(llvm::SimplifyCFGPass());
-  fpm.addPass(llvm::DCEPass());
-  fpm.addPass(llvm::InstCombinePass());
-  fpm.run(*func, fam);
 
   return module->getFunction(func->getName());
 }

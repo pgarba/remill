@@ -147,9 +147,7 @@ void TestBasicBlockFlat(llvm::Module *module, const Arch &arch,
   AddTerminatingTailCall(&entry, jump, intrinsics);
   arch.FinishFlatLiftedFunction(func);
 
-  Check(CountInFunction(*func, "STATE_LOCAL") > 0, "STATE_LOCAL alloca present");
-  Check(CountInFunction(*func, "__remill_flat_state_store") > 0,
-        "__remill_flat_state_store present");
+  Check(CountInFunction(*func, "REG_RAX") > 0, "REG_RAX alloca present (by-value)");
   Check(CountInFunction(*func, "__remill_flat_jump") > 0,
         "__remill_flat_jump present");
   Check(CountInFunction(*func, "STATE_FOR_JUMP") == 0, "no STATE_FOR_JUMP");
@@ -209,6 +207,22 @@ void TestBasicBlockFlatSSA(llvm::Module *module, const Arch &arch,
   Check(!HasConditionalBranch(*func), "no conditional branches");
   // Memory alloca should be present
   Check(CountInFunction(*func, "MEMORY") > 0, "MEMORY alloca present");
+
+  // Verify by-value register args: RAX should be i64 (not ptr).
+  auto *rax_arg = remill::NthArgument(func, kFlatFirstRegArgNum + 0);
+  Check(rax_arg && rax_arg->getType()->isIntegerTy(64),
+        "RAX arg is i64 (by-value)");
+  // CF should be i8 (flag).
+  auto *cf_arg = remill::NthArgument(func, kFlatFirstRegArgNum + 21);
+  Check(cf_arg && cf_arg->getType()->isIntegerTy(8),
+        "CF arg is i8 (by-value flag)");
+  // XMM0 should be <2 x i64>.
+  auto *xmm0_arg = remill::NthArgument(func, kFlatFirstRegArgNum + 36);
+  Check(xmm0_arg && xmm0_arg->getType()->isVectorTy(),
+        "XMM0 arg is vector (by-value)");
+  // REG_* allocas should be present.
+  Check(CountInFunction(*func, "REG_RAX") > 0, "REG_RAX alloca present");
+  Check(CountInFunction(*func, "REG_RSP") > 0, "REG_RSP alloca present");
 }
 
 // ============================================================
