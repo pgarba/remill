@@ -42,6 +42,10 @@
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 #include <llvm/Passes/PassBuilder.h>
 
 #include "remill/BC/Util.h"
@@ -336,6 +340,44 @@ int main(int argc, char **argv) {
   }
 
   fprintf(stderr, "Module verified after SROA.\n");
+
+  // Run additional optimization passes to reduce ISEL wrapper size.
+  // This eliminates dead code, combines instructions, and simplifies CFGs
+  // so the lifted output is smaller after inlining.
+  fprintf(stderr, "Running optimization passes (instcombine, simplifycfg)...\n");
+  fflush(stderr);
+  {
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    llvm::PassBuilder pb(/*TM=*/nullptr, llvm::PipelineTuningOptions(),
+                         std::nullopt, /*PIC=*/nullptr);
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(llvm::InstCombinePass());
+    fpm.addPass(llvm::SimplifyCFGPass());
+    fpm.addPass(llvm::PromotePass());
+    fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(*module, mam);
+  }
+  fprintf(stderr, "Optimization passes complete.\n");
+  fflush(stderr);
+
+  // Verify again after optimization.
+  verify_err.clear();
+  raw_string_ostream verify_stream3(verify_err);
+  if (verifyModule(*module, &verify_stream3)) {
+    fprintf(stderr, "Verification failed after opt: %s\n", verify_err.c_str());
+    return 1;
+  }
 
   // Write the transformed bitcode.
   std::error_code ec;
