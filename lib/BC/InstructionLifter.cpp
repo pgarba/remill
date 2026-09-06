@@ -422,7 +422,8 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
             "CF","PF","AF","ZF","SF","DF","OF",
             "MM0","MM1","MM2","MM3","MM4","MM5","MM6","MM7",
             "XMM0","XMM1","XMM2","XMM3","XMM4","XMM5","XMM6","XMM7",
-            "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15"
+            "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
+            "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"
         };
         auto reg_name_str = (std::string("REG_") + kRegNames[idx]).c_str();
         auto *val = FindVarInFunction(func, reg_name_str, true).first;
