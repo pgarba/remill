@@ -65,10 +65,22 @@ static uint64_t GetUInt64Arg(int argc, char *argv[], const char *flag, uint64_t 
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], flag) == 0 && i + 1 < argc) {
       char *end = nullptr;
-      uint64_t val = strtoull(argv[i + 1], &end, 10);
-      if (end != argv[i + 1]) {
+      // Accept both plain decimal and 0x-prefixed hexadecimal. A bare
+      // `0x...` string must not silently parse as decimal 0: that made
+      // `--address 0x76` lift every block at pc 0 (all named `sub_0`),
+      // which then collapsed under merge/link. Auto-detect the base so the
+      // block-lift + link workflow can use natural hex addresses.
+      const char *arg = argv[i + 1];
+      const bool is_hex =
+          arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X');
+      uint64_t val = strtoull(arg, &end, is_hex ? 16 : 10);
+      // Only accept if the whole token was consumed (no trailing garbage).
+      if (end != arg && *end == '\0') {
         return val;
       }
+      std::cerr << "Invalid value '" << arg << "' for " << flag
+                << " (expected decimal or 0x-hex).\n";
+      return default_val;
     }
   }
   return default_val;
