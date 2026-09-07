@@ -39,6 +39,14 @@ DEF_SEM(LEAVE_16BIT) {
 
 template <typename T>
 DEF_SEM(LEAVE_FULL) {
+#ifdef REMILL_FLAT_ABI
+  // LEAVE: RBP = *RBP_ptr; RSP = RBP_ptr + op_size.
+  char *link_pointer = flat_stack::RbpGet(state);
+  addr_t base_pointer = *reinterpret_cast<const addr_t *>(link_pointer);
+  flat_stack::RbpSet(state, (char *)(uint64_t)base_pointer);
+  flat_stack::RspSet(state, link_pointer + sizeof(T));
+  return memory;
+#else
   addr_t op_size = TruncTo<addr_t>(sizeof(T));
   addr_t link_pointer = Read(REG_XBP);
   addr_t base_pointer =
@@ -46,6 +54,7 @@ DEF_SEM(LEAVE_FULL) {
   Write(REG_XBP, base_pointer);
   Write(REG_XSP, UAdd(link_pointer, op_size));
   return memory;
+#endif
 }
 
 }  // namespace

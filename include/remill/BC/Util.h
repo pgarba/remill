@@ -292,6 +292,25 @@ StripAndAccumulateConstantOffsets(const llvm::DataLayout &dl,
 // Returns the (modified) function, or nullptr if it was eliminated.
 void FixZextPtrToPtrToInt(llvm::Function *func);
 
+// Flat ABI: once a full function (all its block functions, named
+// `sub_<hex-pc>`) has been lifted into a module, replace each block exit's
+// tail call to `__remill_flat_jump` with a direct tail call to the target
+// block function, when the target is statically known (the RIP register
+// argument is a constant or `<entry_pc> + C`) and present in the module.
+// Exits with dynamic targets (ret, indirect branch/call) keep the
+// `__remill_flat_jump` dispatch. This lets the optimizer inline the block
+// chain and eliminate dead stack stores across the whole function.
+void LinkFlatBlockExits(llvm::Module *module);
+
+// Merge the globals and functions of `extra` into `base` (same-named
+// entries are assumed identical and dropped from `extra`). Used to build
+// the full-function module from per-block lift outputs.
+void MergeFlatBlockModules(llvm::Module *base, llvm::Module *extra);
+
+// Inline all non-tail calls to defined internal functions (the _flat ISEL
+// wrappers) so the merged module is self-contained.
+void InlineFlatISelCalls(llvm::Module *module);
+
 llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
                                         llvm::Function *func);
 

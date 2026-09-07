@@ -26,7 +26,7 @@ set(X86RUNTIME_SOURCEFILES
 set_source_files_properties(Instructions.cpp PROPERTIES COMPILE_FLAGS "-O3 -g0")
 set_source_files_properties(BasicBlock.cpp PROPERTIES COMPILE_FLAGS "-O0 -g3")
 
-function(add_runtime_helper target_name address_bit_size enable_avx enable_avx512)
+function(add_runtime_helper target_name address_bit_size enable_avx enable_avx512 extra_defs)
   message(" > Generating runtime target: ${target_name}")
 
   # Visual C++ requires C++14
@@ -36,10 +36,15 @@ function(add_runtime_helper target_name address_bit_size enable_avx enable_avx51
     set(required_cpp_standard "c++11")
   endif()
 
+  set(helper_defs "HAS_FEATURE_AVX=${enable_avx}" "HAS_FEATURE_AVX512=${enable_avx512}")
+  if(NOT extra_defs STREQUAL "")
+    list(APPEND helper_defs ${extra_defs})
+  endif()
+
   add_runtime(${target_name}
     SOURCES ${X86RUNTIME_SOURCEFILES}
     ADDRESS_SIZE ${address_bit_size}
-    DEFINITIONS "HAS_FEATURE_AVX=${enable_avx}" "HAS_FEATURE_AVX512=${enable_avx512}"
+    DEFINITIONS ${helper_defs}
     BCFLAGS "-std=${required_cpp_standard}"
     INCLUDEDIRECTORIES "${REMILL_INCLUDE_DIR}" "${REMILL_SOURCE_DIR}"
     INSTALLDESTINATION "${REMILL_INSTALL_SEMANTICS_DIR}"
@@ -93,12 +98,14 @@ function(add_runtime_helper target_name address_bit_size enable_avx enable_avx51
   )
 endfunction()
 
-add_runtime_helper(x86 32 0 0)
-add_runtime_helper(x86_avx 32 1 0)
-add_runtime_helper(x86_avx512 32 1 1)
+add_runtime_helper(x86 32 0 0 "")
+add_runtime_helper(x86_avx 32 1 0 "")
+add_runtime_helper(x86_avx512 32 1 1 "")
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-  add_runtime_helper(amd64 64 0 0)
-  add_runtime_helper(amd64_avx 64 1 0)
-  add_runtime_helper(amd64_avx512 64 1 1)
+  add_runtime_helper(amd64 64 0 0 "")
+  add_runtime_helper(amd64_avx 64 1 0 "")
+  add_runtime_helper(amd64_avx512 64 1 1 "")
+  # Flat ABI: RSP/RBP pointer access (GEP-based stack semantics).
+  add_runtime_helper(amd64_flat_source 64 0 0 "REMILL_FLAT_ABI=1")
 endif()

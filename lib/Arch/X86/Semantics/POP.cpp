@@ -24,16 +24,37 @@ namespace {
 //       The case of `POP xSP` is correctly handled without special casing.
 template <typename D>
 DEF_SEM(POP, D dst) {
+#ifdef REMILL_FLAT_ABI
+  // Load at the destination's integer width (`D` may be a register wrapper
+  // such as R16W, not a plain integer).
+  typedef typename BaseType<D>::BT ValT;
+  char *old_xsp = flat_stack::RspGet(state);
+  ValT raw = *reinterpret_cast<const ValT *>(old_xsp);
+  flat_stack::RspSet(state, old_xsp + sizeof(ValT));
+  WriteZExt(dst, raw);
+  return memory;
+#else
   addr_t op_size = ZExtTo<D>(ByteSizeOf(dst));
   addr_t old_xsp = Read(REG_XSP);
   addr_t new_xsp = UAdd(old_xsp, op_size);
   Write(REG_XSP, new_xsp);
   WriteZExt(dst, Read(ReadPtr<D>(old_xsp _IF_32BIT(REG_SS_BASE))));
   return memory;
+#endif
 }
 
 template<typename D>
 DEF_SEM(POP_MEM_XSP, D dst) {
+#ifdef REMILL_FLAT_ABI
+  // `dst` is `[RSP + off]`; load, bump RSP, store to the adjusted address.
+  typedef typename BaseType<D>::BT ValT;
+  addr_t op_size = ZExtTo<addr_t>(ByteSizeOf(dst));
+  char *old_xsp = flat_stack::RspGet(state);
+  ValT raw = *reinterpret_cast<const ValT *>(old_xsp);
+  flat_stack::RspSet(state, old_xsp + op_size);
+  WriteZExt(D{dst.addr + op_size}, raw);
+  return memory;
+#else
   addr_t op_size = ZExtTo<D>(ByteSizeOf(dst));
   addr_t old_xsp = Read(REG_XSP);
   addr_t new_xsp = UAdd(old_xsp, op_size);
@@ -46,6 +67,7 @@ DEF_SEM(POP_MEM_XSP, D dst) {
   Write(REG_XSP, new_xsp);
   WriteZExt(D{dst.addr + op_size}, Read(ReadPtr<D>(old_xsp _IF_32BIT(REG_SS_BASE))));
   return memory;
+#endif
 }
 
 #if 32 == ADDRESS_SIZE_BITS

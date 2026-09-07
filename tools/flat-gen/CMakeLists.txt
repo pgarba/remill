@@ -18,14 +18,16 @@ target_include_directories(${REMILL_FLAT_GEN} SYSTEM PUBLIC "${CMAKE_CURRENT_SOU
 
 # Custom target: generate amd64_flat.bc from amd64.bc
 set(FLAT_BC_OUTPUT "${CMAKE_BINARY_DIR}/lib/Arch/X86/Runtime/amd64_flat.bc")
-set(BASE_BC_INPUT "${CMAKE_BINARY_DIR}/lib/Arch/X86/Runtime/amd64.bc")
+# Base input is the flat-ABI runtime (REMILL_FLAT_ABI=1): its ISELs already
+# do RSP/RBP access via pointers so the compiler emits GEPs.
+set(BASE_BC_INPUT "${CMAKE_BINARY_DIR}/lib/Arch/X86/Runtime/amd64_flat_source.bc")
 
 add_custom_target(flat-bitcode
   COMMAND ${CMAKE_COMMAND} -E env
     ${CMAKE_CURRENT_BINARY_DIR}/${REMILL_FLAT_GEN}
     ${BASE_BC_INPUT}
     ${FLAT_BC_OUTPUT}
-  DEPENDS ${REMILL_FLAT_GEN} amd64
+  DEPENDS ${REMILL_FLAT_GEN} amd64_flat_source
   COMMENT "Generating flat-ABI opcode wrappers (amd64_flat.bc)"
   VERBATIM
 )

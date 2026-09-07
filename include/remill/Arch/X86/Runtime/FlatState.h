@@ -112,7 +112,7 @@ enum : unsigned { kX86FlatStateNumFields = 17 + 4 + 7 + 8 + 16 };
 // caller's state and dispatches to the next block.
 extern "C" Memory *__remill_flat_jump(
     addr_t *pc, Memory *memory, addr_t *next_pc,
-    // 17 GPRs (by value).
+    // 17 GPRs (by value). RSP/RBP are i64 (ptrtoint'd so they don't escape).
     addr_t rax, addr_t rbx, addr_t rcx, addr_t rdx,
     addr_t rsi, addr_t rdi, addr_t rsp, addr_t rbp,
     addr_t r8, addr_t r9, addr_t r10, addr_t r11,

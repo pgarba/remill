@@ -85,6 +85,7 @@ static std::string g_bc_out;
 static std::string g_slice_inputs;
 static std::string g_slice_outputs;
 static bool g_flat = false;      // Flat mode: by-value register args, pure SSA
+static std::string g_link_blocks;  // Standalone: link flat block exits in a module
 
 using Memory = std::map<uint64_t, uint8_t>;
 
@@ -237,6 +238,7 @@ int main(int argc, char *argv[]) {
   g_bytes = GetArgValue(argc, argv, "--bytes");
   g_ir_out = GetArgValue(argc, argv, "--ir_out");
   g_bc_out = GetArgValue(argc, argv, "--bc_out");
+  g_link_blocks = GetArgValue(argc, argv, "--link_blocks");
   g_slice_inputs = GetArgValue(argc, argv, "--slice_inputs");
   g_slice_outputs = GetArgValue(argc, argv, "--slice_outputs");
   for (int i = 1; i < argc; ++i) {
@@ -247,7 +249,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (g_bytes.empty()) {
+  if (g_bytes.empty() && g_link_blocks.empty()) {
     std::cerr << "Please specify a sequence of hex bytes to --bytes."
               << std::endl;
     return EXIT_FAILURE;
@@ -281,6 +283,54 @@ int main(int argc, char *argv[]) {
         << " passed to --entry_address does not fit into 32-bits. Did mean"
         << " to specify a 64-bit architecture to --arch?" << std::endl;
     return EXIT_FAILURE;
+  }
+
+  // Standalone mode: take one or more already-lifted flat modules (one
+  // block function per basic block, all blocks of the function present),
+  // merge them, inline the internal ISEL helpers, and replace each block
+  // exit's `__remill_flat_jump` dispatch tail call with a direct tail call
+  // to the successor block function where the target is statically known.
+  // Dynamic exits (ret, indirect branch/call) keep the dispatcher.
+  if (!g_link_blocks.empty()) {
+    std::unique_ptr<llvm::Module> loaded;
+    // --link_blocks may list several modules, space separated. The first is
+    // the base; the rest are merged in.
+    {
+      std::istringstream stream(g_link_blocks);
+      std::string path;
+      while (stream >> path) {
+        auto one = remill::LoadModuleFromFile(&context, path);
+        if (!one) {
+          std::cerr << "Could not load module " << path << std::endl;
+          return EXIT_FAILURE;
+        }
+        if (!loaded) {
+          loaded = std::move(one);
+        } else {
+          remill::MergeFlatBlockModules(loaded.get(), one.get());
+        }
+      }
+    }
+    if (!loaded) {
+      std::cerr << "No modules given to --link_blocks" << std::endl;
+      return EXIT_FAILURE;
+    }
+    remill::InlineFlatISelCalls(loaded.get());
+    auto &link_module = *loaded;
+    remill::LinkFlatBlockExits(&link_module);
+    for (auto &f : link_module) {
+      remill::FixZextPtrToPtrToInt(&f);
+    }
+    int ret = EXIT_SUCCESS;
+    if (!g_ir_out.empty() &&
+        !remill::StoreModuleIRToFile(&link_module, g_ir_out, true)) {
+      ret = EXIT_FAILURE;
+    }
+    if (!g_bc_out.empty() &&
+        !remill::StoreModuleToFile(&link_module, g_bc_out, true)) {
+      ret = EXIT_FAILURE;
+    }
+    return ret;
   }
 
   // Load the appropriate semantics bitcode.
@@ -357,27 +407,46 @@ int main(int argc, char *argv[]) {
     // function so the output is self-contained (no external ISEL references).
     if (g_flat) {
       auto *func = lifted_entry.second;
-      // Collect all non-tail calls to defined functions (the _flat wrappers).
-      llvm::SmallVector<llvm::CallBase *, 16> calls;
-      for (auto &block : *func) {
-        for (auto &inst : block) {
-          if (auto *call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
-            auto *callee = call->getCalledFunction();
-            if (callee && callee != func && !callee->isDeclaration() &&
-                !call->isTailCall()) {
-              calls.push_back(call);
+      // Inline all non-tail calls to defined functions (the _flat wrappers),
+      // iterating to a fixpoint: inlining an outer wrapper exposes nested
+      // ISEL calls that must be inlined in a later round. Note: this LLVM's
+      // CallBase::getCalledFunction() is broken (always null), so match the
+      // callee via getCalledOperand().
+      for (unsigned round = 0; round < 64; ++round) {
+        llvm::SmallVector<llvm::CallBase *, 16> calls;
+        for (auto &block : *func) {
+          for (auto &inst : block) {
+            if (auto *call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+              auto *callee = llvm::dyn_cast_or_null<llvm::Function>(
+                  call->getCalledOperand());
+              if (callee && !callee->isDeclaration() && !call->isTailCall()) {
+                calls.push_back(call);
+              }
             }
           }
         }
-      }
-      // Inline each call (iterate in reverse since inlining invalidates
-      // subsequent iterators).
-      for (auto it = calls.rbegin(); it != calls.rend(); ++it) {
-        auto *call = *it;
-        if (call->use_empty()) continue;  // already inlined/erased
-        llvm::InlineFunctionInfo ifi;
-        auto result = llvm::InlineFunction(*call, ifi);
-        (void)result;
+        if (calls.empty()) {
+          break;
+        }
+        bool inlined_any = false;
+        // Inline each call (iterate in reverse since inlining invalidates
+        // subsequent iterators).
+        for (auto it = calls.rbegin(); it != calls.rend(); ++it) {
+          auto *call = *it;
+          if (call->use_empty()) continue;  // already inlined/erased
+          llvm::InlineFunctionInfo ifi;
+          auto result = llvm::InlineFunction(*call, ifi);
+          if (result.isSuccess()) {
+            inlined_any = true;
+          } else {
+            llvm::errs() << "warning: could not inline "
+                         << call->getCalledOperand()->getName().str()
+                         << ": " << result.getFailureReason() << "\n";
+          }
+        }
+        if (!inlined_any) {
+          break;  // Avoid an infinite loop on a stubborn call.
+        }
       }
     }
 
@@ -401,6 +470,15 @@ int main(int argc, char *argv[]) {
       lifted_entry.second->addFnAttr(llvm::Attribute::InlineHint);
       lifted_entry.second->addFnAttr(llvm::Attribute::AlwaysInline);
     }
+  }
+
+  // Flat mode: now that all block functions of the lifted function(s) are
+  // in the destination module, replace block exits' `__remill_flat_jump`
+  // dispatch tail calls with direct tail calls to the target block function
+  // where the successor is statically known. Dynamic exits (ret, indirect
+  // branch/call) keep the dispatcher.
+  if (g_flat) {
+    remill::LinkFlatBlockExits(&dest_module);
   }
 
   // We have a prototype, so go create a function that will call our entrypoint.

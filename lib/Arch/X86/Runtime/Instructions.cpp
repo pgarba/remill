@@ -138,6 +138,26 @@ State __remill_state;
 #define HYPER_CALL state.hyper_call
 #define INTERRUPT_VECTOR state.hyper_call_vector
 
+#ifdef REMILL_FLAT_ABI
+// Flat ABI: GEP-based stack access.
+//
+// RSP/RBP are passed as pointers to the lifted block (see ABI.h /
+// FlatState.h), but inside the block the GPR qword is the single source of
+// truth: stack pointers are *derived* from the qword on every access. Any
+// instruction that writes RSP/RBP (mov/add/lea RSP, ...) therefore stays
+// consistent automatically.
+//
+// All flat-path stack access MUST go through these non-template helpers.
+// Do not mix `char *` pointer arithmetic with Read/Write inside template
+// bodies (it conflicts with the RnW/MnW type system in Operators.h).
+namespace flat_stack {
+inline char *RspGet(State &s) { return (char *)(uint64_t)s.gpr.rsp.qword; }
+inline void RspSet(State &s, char *p) { s.gpr.rsp.qword = (addr_t)(uint64_t)p; }
+inline char *RbpGet(State &s) { return (char *)(uint64_t)s.gpr.rbp.qword; }
+inline void RbpSet(State &s, char *p) { s.gpr.rbp.qword = (addr_t)(uint64_t)p; }
+}  // namespace flat_stack
+#endif
+
 namespace {
 
 // Takes the place of an unsupported instruction.
@@ -163,12 +183,19 @@ DEF_ISEL(INVALID_INSTRUCTION) = HandleInvalidInstruction;
 namespace {
 template <typename T>
 DEF_HELPER(PopFromStack)->T {
+#ifdef REMILL_FLAT_ABI
+  char *old_xsp = flat_stack::RspGet(state);
+  T val = *reinterpret_cast<const T *>(old_xsp);
+  flat_stack::RspSet(state, old_xsp + sizeof(T));
+  return val;
+#else
   addr_t op_size = TruncTo<addr_t>(sizeof(T));
   addr_t old_xsp = Read(REG_XSP);
   addr_t new_xsp = UAdd(old_xsp, op_size);
   T val = Read(ReadPtr<T>(old_xsp _IF_32BIT(REG_SS_BASE)));
   Write(REG_XSP, new_xsp);
   return val;
+#endif
 }
 
 DEF_HELPER(SquareRoot32, float32_t src_float)->float32_t {

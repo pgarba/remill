@@ -56,6 +56,14 @@ enum : size_t {
 inline bool FlatRegIsFlag(size_t idx) { return idx >= 21 && idx < 28; }
 inline bool FlatRegIsXMM(size_t idx) { return idx >= 36 && idx < 52; }
 inline bool FlatRegIsX87(size_t idx) { return idx >= 52 && idx < 60; }
+// RSP is at index 6 (0=RAX,1=RBX,2=RCX,3=RDX,4=RSI,5=RDI,6=RSP).
+// RBP is at index 7. Both are passed as ptr (pointers into the stack buffer).
+inline constexpr size_t kFlatRSPIndex = 6;
+inline constexpr size_t kFlatRBPIndex = 7;
+inline constexpr size_t kFlatRIPIndex = 16;  // 0=RAX,...,15=R15,16=RIP
+inline bool FlatRegIsRSP(size_t idx) { return idx == kFlatRSPIndex; }
+inline bool FlatRegIsRBP(size_t idx) { return idx == kFlatRBPIndex; }
+inline bool FlatRegIsStackPtr(size_t idx) { return FlatRegIsRSP(idx) || FlatRegIsRBP(idx); }
 
 extern const std::string_view kMemoryVariableName;
 extern const std::string_view kStateVariableName;

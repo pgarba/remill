@@ -49,9 +49,9 @@ extern "C" void __remill_flat_intrinsics(void) [[gnu::used]] {
 // arguments in the same order.
 extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
     State *state,
-    // 17 GPRs.
+    // 17 GPRs. RSP/RBP are ptrs (pointers into runtime stack buffer).
     addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
-    addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,
+    addr_t *rsi, addr_t *rdi, void **rsp, void **rbp,
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
@@ -79,8 +79,12 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
   state->gpr.rdx.qword = *rdx;
   state->gpr.rsi.qword = *rsi;
   state->gpr.rdi.qword = *rdi;
-  state->gpr.rsp.qword = *rsp;
-  state->gpr.rbp.qword = *rbp;
+  // RSP/RBP arrive as ptrs; the qword is the single source of truth inside
+  // the block. The ISEL derives stack pointers from the qword (see
+  // flat_stack::RspGet in Instructions.cpp) so every RSP/RBP writer
+  // (mov/add RSP, ...) stays consistent.
+  state->gpr.rsp.qword = (addr_t)(uintptr_t)*rsp;
+  state->gpr.rbp.qword = (addr_t)(uintptr_t)*rbp;
   state->gpr.r8.qword = *r8;
   state->gpr.r9.qword = *r9;
   state->gpr.r10.qword = *r10;
@@ -158,9 +162,9 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_load(
 // Exit-side mapping: write the final local `State` back through the
 // individual register pointers.
 extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
-    // 17 GPRs.
+    // 17 GPRs. RSP/RBP are ptrs (pointers into runtime stack buffer).
     addr_t *rax, addr_t *rbx, addr_t *rcx, addr_t *rdx,
-    addr_t *rsi, addr_t *rdi, addr_t *rsp, addr_t *rbp,
+    addr_t *rsi, addr_t *rdi, void **rsp, void **rbp,
     addr_t *r8, addr_t *r9, addr_t *r10, addr_t *r11,
     addr_t *r12, addr_t *r13, addr_t *r14, addr_t *r15,
     addr_t *rip,
@@ -189,8 +193,8 @@ extern "C" __attribute__((always_inline)) void __remill_flat_state_store(
   *rdx = state->gpr.rdx.qword;
   *rsi = state->gpr.rsi.qword;
   *rdi = state->gpr.rdi.qword;
-  *rsp = state->gpr.rsp.qword;
-  *rbp = state->gpr.rbp.qword;
+  *rsp = (void *)(uintptr_t)state->gpr.rsp.qword;
+  *rbp = (void *)(uintptr_t)state->gpr.rbp.qword;
   *r8 = state->gpr.r8.qword;
   *r9 = state->gpr.r9.qword;
   *r10 = state->gpr.r10.qword;

@@ -61,11 +61,17 @@ namespace {
 
 template <typename T>
 DEF_HELPER(PushToStack, T val)->void {
+#ifdef REMILL_FLAT_ABI
+  char *new_xsp = flat_stack::RspGet(state) - sizeof(T);
+  *reinterpret_cast<T *>(new_xsp) = val;
+  flat_stack::RspSet(state, new_xsp);
+#else
   addr_t op_size = ZExtTo<addr_t>(ByteSizeOf(val));
   addr_t old_xsp = Read(REG_XSP);
   addr_t new_xsp = USub(old_xsp, op_size);
   Write(WritePtr<T>(new_xsp _IF_32BIT(REG_SS_BASE)), val);
   Write(REG_XSP, new_xsp);
+#endif
 }
 
 template <typename S1>

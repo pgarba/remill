@@ -51,6 +51,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar/DCE.h>
+#include <llvm/Transforms/Scalar/DeadStoreElimination.h>
 #include <llvm/Transforms/Scalar/SROA.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
@@ -2443,6 +2444,668 @@ llvm::Function *ScalarizeFlatFunction(llvm::Module *module,
   return module->getFunction(func->getName());
 }
 
+// Eliminate __remill_read/write_memory calls for RSP-derived addresses by
+// replacing them with direct GEP + load/store. This works because RSP is now
+// a ptr in the flat ABI: any memory access whose address is ptrtoint(RSP) +
+// offset can be converted to a direct pointer dereference.
+static void EliminateStackMemoryAccesses(llvm::Function *func) {
+  auto &context = func->getContext();
+  auto *i64_ty = llvm::Type::getInt64Ty(context);
+  auto *i8_ty = llvm::Type::getInt8Ty(context);
+  auto *ptr_ty = llvm::PointerType::get(context, 0);
+
+  // Helper: check if an i64 value is ptrtoint(X) or ptrtoint(X) +/- offset.
+  // Returns true and fills base_ptr and offset if so.
+  auto decompose_addr = [&](llvm::Value *addr, llvm::Value *&base_ptr,
+                            llvm::Value *&offset) -> bool {
+    // Case 1: addr is directly ptrtoint(X)
+    if (auto *ptoi = llvm::dyn_cast<llvm::PtrToIntInst>(addr)) {
+      base_ptr = ptoi->getOperand(0);
+      offset = llvm::ConstantInt::get(i64_ty, 0);
+      return true;
+    }
+    // Case 2: addr is add/sub(ptrtoint(X), offset)
+    if (auto *bin = llvm::dyn_cast<llvm::BinaryOperator>(addr)) {
+      auto op = bin->getOpcode();
+      if (op == llvm::Instruction::Add || op == llvm::Instruction::Sub) {
+        auto *ptoi = llvm::dyn_cast<llvm::PtrToIntInst>(bin->getOperand(0));
+        if (ptoi) {
+          base_ptr = ptoi->getOperand(0);
+          auto *off = bin->getOperand(1);
+          if (op == llvm::Instruction::Sub) {
+            if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(off)) {
+              offset = llvm::ConstantInt::get(i64_ty, -ci->getSExtValue());
+            } else {
+              // sub with non-const: negate via add -x
+              llvm::IRBuilder<> ir(bin);
+              offset = ir.CreateNeg(off, "neg_off");
+            }
+          } else {
+            offset = off;
+          }
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  // Pass 1: Replace __remill_read/write_memory calls with direct load/store.
+  for (auto &block : *func) {
+    llvm::SmallVector<llvm::Instruction *, 16> to_erase;
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call) continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee) continue;
+      auto name = callee->getName();
+
+      bool is_read = name.starts_with("__remill_read_memory_");
+      bool is_write = name.starts_with("__remill_write_memory_");
+      if (!is_read && !is_write) continue;
+
+      // Address is arg 1 (arg 0 is the memory pointer).
+      llvm::Value *addr = call->getArgOperand(1);
+      if (!addr || !addr->getType()->isIntegerTy(64)) continue;
+
+      llvm::Value *base_ptr = nullptr;
+      llvm::Value *offset = nullptr;
+      if (!decompose_addr(addr, base_ptr, offset)) continue;
+
+      llvm::IRBuilder<> ir(call);
+      auto *gep = ir.CreateInBoundsGEP(i8_ty, base_ptr, offset, "stack_ptr");
+
+      if (is_read) {
+        auto *load = ir.CreateLoad(call->getType(), gep, "stack_load");
+        call->replaceAllUsesWith(load);
+      } else {
+        // Write: store the value, thread the memory pointer through unchanged.
+        llvm::Value *val = call->getArgOperand(2);
+        ir.CreateStore(val, gep);
+        // The write returns a new memory pointer; replace uses with the input
+        // memory pointer (stack writes don't affect the memory model).
+        call->replaceAllUsesWith(call->getArgOperand(0));
+      }
+      to_erase.push_back(call);
+    }
+    for (auto *i : to_erase) i->eraseFromParent();
+  }
+
+  // Pass 2: Replace inttoptr(add/sub(ptrtoint(X), off)) with GEP(X, off).
+  // This handles RSP updates: instead of inttoptr(rsp_i64 + 8), use GEP(rsp, 8).
+  for (auto &block : *func) {
+    llvm::SmallVector<llvm::Instruction *, 16> to_erase;
+    for (auto &inst : block) {
+      auto *itoptr = llvm::dyn_cast<llvm::IntToPtrInst>(&inst);
+      if (!itoptr) continue;
+
+      llvm::Value *addr = itoptr->getOperand(0);
+      llvm::Value *base_ptr = nullptr;
+      llvm::Value *offset = nullptr;
+      if (!decompose_addr(addr, base_ptr, offset)) continue;
+
+      llvm::IRBuilder<> ir(itoptr);
+      auto *gep = ir.CreateInBoundsGEP(i8_ty, base_ptr, offset, "rsp_next");
+      itoptr->replaceAllUsesWith(gep);
+      to_erase.push_back(itoptr);
+    }
+    for (auto *i : to_erase) i->eraseFromParent();
+  }
+
+  // Pass 3: DCE any now-unused ptrtoint instructions.
+  for (auto &block : *func) {
+    llvm::SmallVector<llvm::Instruction *, 16> to_erase;
+    for (auto &inst : block) {
+      if (auto *ptoi = llvm::dyn_cast<llvm::PtrToIntInst>(&inst)) {
+        if (ptoi->use_empty()) to_erase.push_back(ptoi);
+      }
+    }
+    for (auto *i : to_erase) i->eraseFromParent();
+  }
+}
+
+// Stack frame reconstruction: normalize all RSP/RBP-derived pointers to
+// GEP(initial_RSP, total_offset), then forward store→load pairs and
+// eliminate dead stores. This makes the IR look like compiler output.
+static void ForwardStackSlotAccesses(llvm::Function *func) {
+  auto &ctx = func->getContext();
+  auto *i64 = llvm::Type::getInt64Ty(ctx);
+  auto *i8 = llvm::Type::getInt8Ty(ctx);
+
+  // Find the RSP and RBP function arguments (ptr type, indices 6 and 7).
+  llvm::Argument *rsp_arg = nullptr;
+  llvm::Argument *rbp_arg = nullptr;
+  auto args = func->arg_begin();
+  for (size_t i = 0; i < func->arg_size(); ++i, ++args) {
+    if (i == 3 + 6) rsp_arg = &*args;   // kFlatFirstRegArgNum + 6
+    if (i == 3 + 7) rbp_arg = &*args;   // kFlatFirstRegArgNum + 7
+    if (i >= 3 + 7) break;
+  }
+  if (!rsp_arg) return;
+
+  // Phase 1: Compute the stack offset for every RSP/RBP-derived value.
+  // Map: Value* → cumulative byte offset from initial RSP.
+  llvm::DenseMap<llvm::Value *, int64_t> offsets;
+  offsets[rsp_arg] = 0;
+  if (rbp_arg) offsets[rbp_arg] = 0;
+
+  llvm::SmallVector<llvm::Value *> worklist;
+  worklist.push_back(rsp_arg);
+  if (rbp_arg) worklist.push_back(rbp_arg);
+
+  size_t wl_idx = 0;
+  while (wl_idx < worklist.size()) {
+    auto *v = worklist[wl_idx++];
+    auto base_off = offsets[v];
+
+    for (auto *user : v->users()) {
+      // GEP(i8, X, offset) → offset + GEP_offset
+      if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(user)) {
+        if (gep->getSourceElementType() == i8 &&
+            gep->getPointerOperand() == v) {
+          auto *idx = gep->getOperand(1);
+          if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(idx)) {
+            int64_t new_off = base_off +
+                static_cast<int64_t>(ci->getSExtValue());
+            if (!offsets.count(user)) {
+              offsets[user] = new_off;
+              worklist.push_back(user);
+            }
+          }
+        }
+      }
+      // ptrtoint(X) → track for inttoptr pattern
+      if (auto *pti = llvm::dyn_cast<llvm::PtrToIntInst>(user)) {
+        if (pti->getOperand(0) == v) {
+          if (!offsets.count(pti)) {
+            offsets[pti] = base_off;
+            worklist.push_back(pti);
+          }
+        }
+      }
+      // add(ptrtoint(X), C) → offset + C
+      if (auto *bo = llvm::dyn_cast<llvm::BinaryOperator>(user)) {
+        if (bo->getOpcode() == llvm::Instruction::Add ||
+            bo->getOpcode() == llvm::Instruction::Sub) {
+          auto *lhs = llvm::dyn_cast<llvm::PtrToIntInst>(bo->getOperand(0));
+          auto *rhs = llvm::dyn_cast<llvm::ConstantInt>(bo->getOperand(1));
+          if (lhs && rhs && offsets.count(lhs)) {
+            int64_t new_off = (bo->getOpcode() == llvm::Instruction::Add)
+                                  ? offsets[lhs] + rhs->getSExtValue()
+                                  : offsets[lhs] - rhs->getSExtValue();
+            if (!offsets.count(user)) {
+              offsets[user] = new_off;
+              worklist.push_back(user);
+            }
+          }
+        }
+      }
+      // inttoptr(add/sub result) → offset from the add/sub
+      if (auto *itp = llvm::dyn_cast<llvm::IntToPtrInst>(user)) {
+        auto *src = itp->getOperand(0);
+        if (offsets.count(src)) {
+          if (!offsets.count(user)) {
+            offsets[user] = offsets[src];
+            worklist.push_back(user);
+          }
+        }
+      }
+    }
+  }
+
+  // Phase 2: Normalize all RSP-derived pointers to GEP(rsp_arg, offset).
+  // Replace each tracked pointer value with a canonical GEP.
+  llvm::IRBuilder<> builder(ctx);
+  llvm::SmallVector<llvm::Value *> old_vals;
+  llvm::SmallVector<llvm::GetElementPtrInst *> new_geps;
+
+  for (auto &[val, off] : offsets) {
+    if (val == rsp_arg || val == rbp_arg) continue;
+    if (!llvm::isa<llvm::Instruction>(val)) continue;
+    auto *inst = llvm::cast<llvm::Instruction>(val);
+    // Only normalize ptr-typed values.
+    if (!inst->getType()->isPointerTy()) continue;
+    // Create canonical GEP after the instruction.
+    builder.SetInsertPoint(inst);
+    auto *gep = llvm::cast<llvm::GetElementPtrInst>(
+        builder.CreateGEP(i8, rsp_arg, builder.getInt64(off), "rsp_slot"));
+    old_vals.push_back(val);
+    new_geps.push_back(gep);
+  }
+
+  // Apply replacements (replaceAllUsesWith).
+  for (size_t i = 0; i < old_vals.size(); ++i) {
+    old_vals[i]->replaceAllUsesWith(new_geps[i]);
+  }
+
+  // Phase 3: Store-load forwarding.
+  // After normalization, all accesses to the same slot use the same GEP.
+  // For each load, find the most recent store to the same GEP and forward.
+  llvm::SmallVector<std::pair<llvm::LoadInst *, llvm::Value *>, 64> forwards;
+
+  for (auto &bb : *func) {
+    llvm::SmallVector<llvm::Instruction *> insts;
+    for (auto &inst : bb) insts.push_back(&inst);
+
+    for (size_t i = 0; i < insts.size(); ++i) {
+      auto *load = llvm::dyn_cast<llvm::LoadInst>(insts[i]);
+      if (!load) continue;
+      auto *load_ptr = load->getPointerOperand();
+      if (!llvm::isa<llvm::GetElementPtrInst>(load_ptr)) continue;
+      if (llvm::cast<llvm::GetElementPtrInst>(load_ptr)
+              ->getSourceElementType() != i8)
+        continue;
+
+      // Search backwards for a store to the same pointer.
+      for (size_t j = i; j-- > 0;) {
+        auto *store = llvm::dyn_cast<llvm::StoreInst>(insts[j]);
+        if (!store) continue;
+        if (store->getPointerOperand() == load_ptr) {
+          forwards.push_back({load, store->getValueOperand()});
+          break;
+        }
+      }
+    }
+  }
+
+  // Apply forwards.
+  for (auto &[load, val] : forwards) {
+    builder.SetInsertPoint(load);
+    load->replaceAllUsesWith(val);
+    load->eraseFromParent();
+  }
+
+  // Phase 4: Remove dead stores (stores with no uses of the pointer).
+  llvm::SmallVector<llvm::StoreInst *, 64> dead_stores;
+  for (auto &bb : *func) {
+    for (auto &inst : bb) {
+      if (auto *store = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+        auto *ptr = store->getPointerOperand();
+        if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(ptr)) {
+          if (gep->getSourceElementType() == i8 && gep->use_empty()) {
+            dead_stores.push_back(store);
+          }
+        }
+      }
+    }
+  }
+  for (auto *store : dead_stores) {
+    store->eraseFromParent();
+  }
+}
+
+namespace {
+
+// Parse a flat block function name `sub_<hex-pc>` (see TraceLifter).
+bool FlatBlockFunctionPc(llvm::Function *func, uint64_t *pc) {
+  auto name = func->getName();
+  if (!name.starts_with("sub_")) {
+    return false;
+  }
+  auto digits = name.drop_front(4);
+  if (digits.empty()) {
+    return false;
+  }
+  uint64_t value = 0;
+  for (char c : digits) {
+    value <<= 4;
+    if (c >= '0' && c <= '9') {
+      value += uint64_t(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      value += uint64_t(c - 'a' + 10);
+    } else if (c >= 'A' && c <= 'F') {
+      value += uint64_t(c - 'A' + 10);
+    } else {
+      return false;
+    }
+  }
+  *pc = value;
+  return true;
+}
+
+// Resolve the value of a load from the PC or NEXT_PC pointer: walk back to
+// the last store of that pointer in the load's own block; if there is none,
+// the dispatcher seeded the cell with the entry pc at block start.
+static bool ResolvePcLoad(llvm::Function *func, llvm::LoadInst *ld,
+                          uint64_t entry, unsigned depth, uint64_t *pc) {
+  if (depth > 256) {
+    return false;
+  }
+  auto *ptr = ld->getPointerOperand();
+  if (ptr != func->getArg(kFlatPCArgNum) &&
+      ptr != func->getArg(kFlatNextPCArgNum)) {
+    return false;
+  }
+  auto *block = ld->getParent();
+  llvm::BasicBlock::iterator it = block->begin();
+  for (; &*it != ld; ++it) {
+    if (it == block->end()) {
+      return false;
+    }
+  }
+  for (; it != block->begin();) {
+    --it;
+    auto *store = llvm::dyn_cast<llvm::StoreInst>(&*it);
+    if (store && store->getPointerOperand() == ptr) {
+      auto *v = store->getValueOperand();
+      if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(v)) {
+        *pc = ci->getZExtValue();
+        return true;
+      }
+      if (auto *inner = llvm::dyn_cast<llvm::LoadInst>(v)) {
+        return ResolvePcLoad(func, inner, entry, depth + 1, pc);
+      }
+      // The store is typically `add (entry pc load), C`; resolve the add by
+      // finding its constant and pc-load operands.
+      if (auto *bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+        if (bin->getOpcode() != llvm::Instruction::Add &&
+            bin->getOpcode() != llvm::Instruction::Or) {
+          return false;
+        }
+        for (int i = 0; i < 2; ++i) {
+          auto *ci = llvm::dyn_cast<llvm::ConstantInt>(bin->getOperand(i));
+          auto *inner = llvm::dyn_cast<llvm::LoadInst>(bin->getOperand(1 - i));
+          if (ci && inner) {
+            uint64_t base = 0;
+            if (ResolvePcLoad(func, inner, entry, depth + 1, &base)) {
+              *pc = base + ci->getZExtValue();
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+  }
+  // No store in the block: the dispatcher seeded the cell at block entry.
+  if (block == &func->getEntryBlock()) {
+    *pc = entry;
+    return true;
+  }
+  return false;
+}
+
+// Resolve a static successor pc expression: a constant, or
+// `<pc of some instruction> + C` where the base pc is a load from the PC or
+// NEXT_PC pointer (threaded through the block by the ISEL). Returns false
+// for dynamic exits (ret, indirect branch/call).
+bool FlatExitTargetPc(llvm::Function *func, llvm::CallInst *call,
+                      uint64_t *target) {
+  auto *next_pc_arg = func->getArg(kFlatNextPCArgNum);
+
+  // The successor is the value last stored to the NEXT_PC pointer before the
+  // `__remill_flat_jump` tail call (the dispatcher reads *next_pc).
+  llvm::Value *next_pc = nullptr;
+  auto *block = call->getParent();
+  for (auto it = std::prev(block->end()); it != block->begin(); --it) {
+    auto *store = llvm::dyn_cast<llvm::StoreInst>(&*it);
+    if (store && store->getPointerOperand() == next_pc_arg) {
+      next_pc = store->getValueOperand();
+      break;
+    }
+  }
+  // Conditional branch exits: the ISEL stores `select cond, taken_pc,
+  // not_taken_pc` to NEXT_PC in the branch block, then splits with
+  // `br i1 cond`. The exit block itself has no NEXT_PC store; recover the
+  // arm of the select that belongs to this exit block.
+  if (!next_pc) {
+    llvm::BranchInst *branch = nullptr;
+    for (auto *pred : llvm::predecessors(block)) {
+      auto *br = llvm::dyn_cast_or_null<llvm::BranchInst>(pred->getTerminator());
+      if (br && br->isConditional() &&
+          (br->getSuccessor(0) == block || br->getSuccessor(1) == block)) {
+        branch = br;
+        break;
+      }
+    }
+    if (branch) {
+      llvm::Value *stored = nullptr;
+      // Last NEXT_PC store in the branch block.
+      auto *bblock = branch->getParent();
+      for (auto it = std::prev(bblock->end()); it != bblock->begin(); --it) {
+        auto *store = llvm::dyn_cast<llvm::StoreInst>(&*it);
+        if (store && store->getPointerOperand() == next_pc_arg) {
+          stored = store->getValueOperand();
+          break;
+        }
+      }
+      if (auto *sel = llvm::dyn_cast<llvm::SelectInst>(stored)) {
+        if (sel->getCondition() == branch->getCondition()) {
+          next_pc = (branch->getSuccessor(0) == block) ? sel->getTrueValue()
+                                                       : sel->getFalseValue();
+        }
+      }
+    }
+    if (!next_pc) {
+      return false;
+    }
+  }
+
+  uint64_t entry = 0;
+  if (!FlatBlockFunctionPc(func, &entry)) {
+    return false;
+  }
+
+  if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(next_pc)) {
+    *target = ci->getZExtValue();
+    return true;
+  }
+  if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(next_pc)) {
+    return ResolvePcLoad(func, ld, entry, 0, target);
+  }
+  if (auto *bin = llvm::dyn_cast<llvm::BinaryOperator>(next_pc)) {
+    if (bin->getOpcode() != llvm::Instruction::Add &&
+        bin->getOpcode() != llvm::Instruction::Or) {
+      return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+      auto *ci = llvm::dyn_cast<llvm::ConstantInt>(bin->getOperand(i));
+      auto *inner = llvm::dyn_cast<llvm::LoadInst>(bin->getOperand(1 - i));
+      if (ci && inner) {
+        uint64_t base = 0;
+        if (ResolvePcLoad(func, inner, entry, 0, &base)) {
+          *target = base + ci->getZExtValue();
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+void LinkFlatBlockExits(llvm::Module *module) {
+  if (!module) {
+    return;
+  }
+  auto *flat_jump = module->getFunction("__remill_flat_jump");
+  if (!flat_jump) {
+    return;
+  }
+
+  auto &context = module->getContext();
+  auto *i64 = llvm::Type::getInt64Ty(context);
+  auto *i32 = llvm::Type::getInt32Ty(context);
+  llvm::IRBuilder<> builder(context);
+
+  // Per-target private cell holding the target's entry pc. Successor blocks
+  // read (and write back) their entry pc from their PC pointer argument,
+  // which the runtime dispatcher provides per block; a mutable private
+  // global plays the same role for direct links.
+  llvm::DenseMap<llvm::Function *, llvm::GlobalVariable *> pc_cells;
+
+  // Collect all dispatcher tail calls first: the exits may be merged into a
+  // common block (SimplifyCFG), so the calls are not necessarily the return
+  // value of the terminator. Note: this LLVM's CallBase::getCalledFunction()
+  // returns null for every direct call (it compares the callee's *return*
+  // type against the call's function type), so match via getCalledOperand().
+  llvm::SmallVector<llvm::CallInst *, 8> calls;
+  for (auto &func : *module) {
+    if (func.isDeclaration()) {
+      continue;
+    }
+    for (auto &block : func) {
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        if (call && call->isTailCall() &&
+            call->getCalledOperand() == flat_jump) {
+          calls.push_back(call);
+        }
+      }
+    }
+  }
+
+
+  unsigned relinked = 0;
+  unsigned kept = 0;
+  for (auto *call : calls) {
+    auto *func = call->getFunction();
+    uint64_t target_pc = 0;
+    if (!FlatExitTargetPc(func, call, &target_pc)) {
+      ++kept;  // Dynamic exit (ret / indirect): keep the dispatcher.
+      continue;
+    }
+
+    char name[24];
+    snprintf(name, sizeof(name), "sub_%llx",
+             static_cast<unsigned long long>(target_pc));
+    auto *target = module->getFunction(name);
+    if (!target || target->isDeclaration() || target == func ||
+        // Compare against the caller's (block function) type, not the
+        // `__remill_flat_jump` stub's: the stub declares XMM params as
+        // `ptr byval(...)` while block functions take `<2 x i64>` by value.
+        target->getFunctionType() != func->getFunctionType()) {
+      ++kept;  // Target not lifted (yet) or signature mismatch.
+      continue;
+    }
+
+    auto it = pc_cells.find(target);
+    llvm::GlobalVariable *cell;
+    if (it != pc_cells.end()) {
+      cell = it->second;
+    } else {
+      cell = new llvm::GlobalVariable(
+          *module, i64, /*isConstant=*/false,
+          llvm::GlobalValue::PrivateLinkage,
+          llvm::ConstantInt::get(i64, target_pc),
+          "flat_pc_" + std::to_string(target_pc));
+      pc_cells[target] = cell;
+    }
+
+    // GEP the target's entry-pc cell and hand it to the target as its PC
+    // pointer argument; the remaining 62 operands are positionally
+    // identical to the target's register arguments.
+    builder.SetInsertPoint(call);
+    auto *pc_ptr = builder.CreateInBoundsGEP(
+        i64, cell, llvm::ConstantInt::get(i32, 0), "target_pc");
+    call->setOperand(kFlatPCArgNum, pc_ptr);
+    call->setCalledFunction(target);
+    ++relinked;
+  }
+
+  llvm::errs() << "LinkFlatBlockExits: " << relinked
+               << " exit(s) linked directly to block functions, " << kept
+               << " kept __remill_flat_jump dispatch\n";
+}
+
+// Merge the globals and functions of `extra` into `base`. Entries with the
+// same name are assumed identical (same lift run/version) and dropped from
+// `extra`. Used to assemble the full-function module from per-block lift
+// outputs.
+void MergeFlatBlockModules(llvm::Module *base, llvm::Module *extra) {
+  if (!base || !extra || base == extra) {
+    return;
+  }
+  // Globals: per-block lift outputs normally have none. Copy declarations;
+  // defined globals are rare enough to reject rather than risk a wrong
+  // initializer remap.
+  llvm::SmallVector<llvm::GlobalVariable *, 8> gvs;
+  for (auto &gv : extra->globals()) {
+    gvs.push_back(&gv);
+  }
+  for (auto *gv : gvs) {
+    if (base->getGlobalVariable(gv->getName())) {
+      gv->eraseFromParent();
+      continue;
+    }
+    if (!gv->isDeclaration()) {
+      llvm::errs() << "  [link_blocks] warning: dropping defined global "
+                   << gv->getName() << " (unsupported initializer)\n";
+      gv->eraseFromParent();
+      continue;
+    }
+    auto *copy = new llvm::GlobalVariable(
+        *base, gv->getValueType(), gv->isConstant(), gv->getLinkage(),
+        nullptr, gv->getName());
+    copy->setAlignment(llvm::Align(gv->getAlignment()));
+    gv->eraseFromParent();
+  }
+  llvm::SmallVector<llvm::Function *, 8> funcs;
+  for (auto &fn : *extra) {
+    funcs.push_back(&fn);
+  }
+  for (auto *fn : funcs) {
+    if (base->getFunction(fn->getName())) {
+      fn->eraseFromParent();
+      continue;
+    }
+    MoveFunctionIntoModule(fn, base);
+  }
+}
+
+// Inline all non-tail calls to defined internal functions (the _flat ISEL
+// wrappers) so the merged module is self-contained. Tail calls to the block
+// functions and to `__remill_flat_jump` are left alone.
+void InlineFlatISelCalls(llvm::Module *module) {
+  if (!module) {
+    return;
+  }
+  for (unsigned pass = 0; pass < 32; ++pass) {
+    llvm::SmallVector<llvm::CallBase *, 64> calls;
+    for (auto &func : *module) {
+      if (func.isDeclaration()) {
+        continue;
+      }
+      for (auto &block : func) {
+        for (auto &inst : block) {
+          auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+          if (!call || call->isTailCall()) {
+            continue;
+          }
+          auto *callee =
+              llvm::dyn_cast_or_null<llvm::Function>(call->getCalledOperand());
+          if (!callee || callee->isDeclaration() || callee == &func) {
+            continue;
+          }
+          if (!callee->hasInternalLinkage() &&
+              !callee->hasPrivateLinkage()) {
+            continue;
+          }
+          calls.push_back(call);
+        }
+      }
+    }
+    if (calls.empty()) {
+      break;
+    }
+    bool inlined_any = false;
+    for (auto it = calls.rbegin(); it != calls.rend(); ++it) {
+      auto *call = *it;
+      if (call->use_empty()) {
+        continue;
+      }
+      llvm::InlineFunctionInfo ifi;
+      if (llvm::InlineFunction(*call, ifi).isSuccess()) {
+        inlined_any = true;
+      }
+    }
+    if (!inlined_any) {
+      break;  // Avoid an infinite loop on a stubborn call.
+    }
+  }
+}
+
 // Optimize a pure-SSA flat function after inlining the _flat ISEL wrappers.
 // Runs: mem2reg + SROA + instcombine. This scalarizes the State allocas that
 // were inlined from the _flat wrappers and simplifies the flag computation
@@ -2453,6 +3116,9 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
     return nullptr;
   }
   FixZextPtrToPtrToInt(func);
+
+  // Eliminate stack memory accesses (RSP ptr → direct load/store).
+  EliminateStackMemoryAccesses(func);
 
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
@@ -2482,17 +3148,34 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   }
 
   // Run optimization. For branch functions, skip SROA (LLVM 21 assertion
-  // bug) but still run instcombine/simplifycfg/DCE to reduce size.
+  // bug) but still run simplifycfg/DCE to reduce size.
+  // IMPORTANT: No InstCombine in the loop — it simplifies GEP chains
+  // (GEP(GEP(RSP,-8),8) → RSP), breaking RSP tracking needed by
+  // ForwardStackSlotAccesses. InstCombine runs once at the end, AFTER
+  // store-load forwarding is complete.
   for (int iter = 0; iter < 3; ++iter) {
     llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::PromotePass());  // mem2reg
     if (!has_cond_branch) {
       fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
     }
-    fpm.addPass(llvm::InstCombinePass());
     fpm.addPass(llvm::SimplifyCFGPass());
     fpm.addPass(llvm::DCEPass());
+    fpm.run(*func, fam);
+  }
+
+  // Run stack elimination again after optimization (new patterns may emerge
+  // from instcombine simplifying the address arithmetic).
+  func = module->getFunction(func->getName());
+  if (func) {
+    EliminateStackMemoryAccesses(func);
+    // Normalize RSP-derived pointers and forward store→load pairs.
+    ForwardStackSlotAccesses(func);
+    // Final cleanup: DCE dead stores and instructions.
+    llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::InstCombinePass());
+    fpm.addPass(llvm::DCEPass());
+    fpm.addPass(llvm::SimplifyCFGPass());
     fpm.run(*func, fam);
   }
 

@@ -1822,6 +1822,8 @@ llvm::FunctionType *X86Arch::FlatLiftedFunctionType(void) const {
           llvm::Type::getInt64Ty(context), 2));             // <2 x i64> XMM
     } else if (FlatRegIsX87(i)) {
       args.push_back(llvm::Type::getInt128Ty(context));     // i128 X87 ST
+    } else if (FlatRegIsStackPtr(i)) {
+      args.push_back(ptr);                                   // ptr RSP/RBP (stack pointers)
     } else {
       args.push_back(llvm::Type::getInt64Ty(context));      // i64 GPR/seg/MMX
     }
@@ -1951,11 +1953,18 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto *val = FindVarInFunction(func, (std::string("REG_") + kRegNames[i]).c_str(), true).first;
       auto *alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
+      llvm::Value *arg;
       if (alloca) {
-        jump_args.push_back(ir.CreateLoad(alloca->getAllocatedType(), alloca, "reg_out"));
+        arg = ir.CreateLoad(alloca->getAllocatedType(), alloca, "reg_out");
       } else {
-        jump_args.push_back(remill::NthArgument(func, kFlatFirstRegArgNum + i));
+        arg = remill::NthArgument(func, kFlatFirstRegArgNum + i);
       }
+      // RSP/RBP are ptr in the function body but i64 in the jump (so they
+      // don't escape the function, enabling dead store elimination).
+      if (FlatRegIsStackPtr(i)) {
+        arg = ir.CreatePtrToInt(arg, ir.getInt64Ty(), "rsp_i64");
+      }
+      jump_args.push_back(arg);
     }
     auto new_call = ir.CreateCall(flat_jump, jump_args);
     new_call->setTailCall(true);
