@@ -3001,6 +3001,20 @@ void LinkFlatBlockExits(llvm::Module *module) {
         i64, cell, llvm::ConstantInt::get(i32, 0), "target_pc");
     call->setOperand(kFlatPCArgNum, pc_ptr);
     call->setCalledFunction(target);
+
+    // The `__remill_flat_jump` stub declares RSP/RBP as i64, so the ISEL
+    // emits them at those positions as `ptrtoint` of the stack slots. Block
+    // functions take RSP/RBP as `ptr` (ABI v2): recover the pointer operand
+    // so the relinked call is type-correct.
+    for (size_t idx : {kFlatFirstRegArgNum + kFlatRSPIndex,
+                       kFlatFirstRegArgNum + kFlatRBPIndex}) {
+      auto *param = target->getFunctionType()->getParamType(idx);
+      if (llvm::isa<llvm::PointerType>(param)) {
+        if (auto *p2i = llvm::dyn_cast<llvm::PtrToIntInst>(call->getOperand(idx))) {
+          call->setOperand(idx, p2i->getOperand(0));
+        }
+      }
+    }
     ++relinked;
   }
 
