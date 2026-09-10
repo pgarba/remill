@@ -2708,10 +2708,35 @@ static void ForwardStackSlotAccesses(llvm::Function *func) {
     }
   }
 
-  // Apply forwards.
+  // Apply forwards. A forwarded value may itself be a load that is also
+  // being forwarded (erased) -- e.g. the `store C; L=load; store L; ...`
+  // chain produced by PSRLDQ-style aggregate loops. Naively forwarding
+  // L2 -> L1 and then erasing L1 leaves L2's uses pointing at a deleted
+  // value (printed as <badref>). Resolve every chain to its final non-load
+  // value first, so no replacement ever references a load that is erased.
+  std::unordered_map<llvm::LoadInst *, llvm::Value *> fwd_map;
   for (auto &[load, val] : forwards) {
+    fwd_map[load] = val;
+  }
+  auto resolve_fwd = [&](llvm::Value *v) -> llvm::Value * {
+    int guard = 0;
+    while (guard++ < 2048) {
+      auto *l = llvm::dyn_cast<llvm::LoadInst>(v);
+      if (!l) {
+        return v;
+      }
+      auto it = fwd_map.find(l);
+      if (it == fwd_map.end()) {
+        return v;
+      }
+      v = it->second;
+    }
+    return v;  // cycle guard
+  };
+  for (auto &[load, val] : forwards) {
+    llvm::Value *final_val = resolve_fwd(val);
     builder.SetInsertPoint(load);
-    load->replaceAllUsesWith(val);
+    load->replaceAllUsesWith(final_val);
     load->eraseFromParent();
   }
 
