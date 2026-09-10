@@ -116,22 +116,28 @@ class InstructionLifter::Impl {
     // RDX (3): EDX, DX, DL, DH
     flat_reg_index["EDX"] = 3; flat_reg_index["DX"] = 3;
     flat_reg_index["DL"] = 3; flat_reg_index["DH"] = 3;
-    // RSI (4): ESI, SI
+    // RSI (4): ESI, SI, SIL
     flat_reg_index["ESI"] = 4; flat_reg_index["SI"] = 4;
-    // RDI (5): EDI, DI
+    flat_reg_index["SIL"] = 4;
+    // RDI (5): EDI, DI, DIL
     flat_reg_index["EDI"] = 5; flat_reg_index["DI"] = 5;
-    // RSP (6): ESP, SP
+    flat_reg_index["DIL"] = 5;
+    // RSP (6): ESP, SP, SPL
     flat_reg_index["ESP"] = 6; flat_reg_index["SP"] = 6;
-    // RBP (7): EBP, BP
+    flat_reg_index["SPL"] = 6;
+    // RBP (7): EBP, BP, BPL
     flat_reg_index["EBP"] = 7; flat_reg_index["BP"] = 7;
-    // R8-R15 (8-15): RnD, RnW, RnB
+    flat_reg_index["BPL"] = 7;
+    // R8-R15 (8-15): RnD, RnW, RnB all map to the full-size register index
+    // (matching gpr_names above: R8=8 ... R15=15). The ISEL accesses the
+    // correct width through the register pointer.
     for (int i = 8; i <= 15; ++i) {
-      flat_reg_index["R" + std::to_string(i) + "D"] = i - 8;
-      flat_reg_index["R" + std::to_string(i) + "W"] = i - 8;
-      flat_reg_index["R" + std::to_string(i) + "B"] = i - 8;
+      flat_reg_index["R" + std::to_string(i) + "D"] = i;
+      flat_reg_index["R" + std::to_string(i) + "W"] = i;
+      flat_reg_index["R" + std::to_string(i) + "B"] = i;
     }
-    // RIP (16): EIP
-    flat_reg_index["EIP"] = 16;
+    // RIP (16): EIP, IP
+    flat_reg_index["EIP"] = 16; flat_reg_index["IP"] = 16;
 
     // 4 seg bases (names match Arch register names: no underscore).
     const char *seg_names[] = {"SSBASE","GSBASE","CSBASE","FSBASE"};
