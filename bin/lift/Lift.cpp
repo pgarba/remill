@@ -35,6 +35,7 @@
 #include <remill/BC/IntrinsicTable.h>
 #include <remill/BC/Lifter.h>
 #include <remill/BC/Optimizer.h>
+#include <remill/BC/Unflatten.h>
 #include <remill/BC/Util.h>
 #include <remill/OS/OS.h>
 #include <remill/Version/Version.h>
@@ -98,6 +99,9 @@ static std::string g_slice_inputs;
 static std::string g_slice_outputs;
 static bool g_flat = false;      // Flat mode: by-value register args, pure SSA
 static std::string g_link_blocks;  // Standalone: link flat block exits in a module
+static std::string g_unflatten_edges;  // Standalone: edge table (edges.json)
+static std::string g_unflatten_name = "main";  // name of the unflattened fn
+static bool g_unflatten_opt = false;  // run instcombine+DCE on the result
 
 using Memory = std::map<uint64_t, uint8_t>;
 
@@ -251,6 +255,11 @@ int main(int argc, char *argv[]) {
   g_ir_out = GetArgValue(argc, argv, "--ir_out");
   g_bc_out = GetArgValue(argc, argv, "--bc_out");
   g_link_blocks = GetArgValue(argc, argv, "--link_blocks");
+  g_unflatten_edges = GetArgValue(argc, argv, "--unflatten");
+  g_unflatten_name = GetArgValue(argc, argv, "--unflatten_name");
+  if (g_unflatten_name.empty()) {
+    g_unflatten_name = "main";
+  }
   g_slice_inputs = GetArgValue(argc, argv, "--slice_inputs");
   g_slice_outputs = GetArgValue(argc, argv, "--slice_outputs");
   for (int i = 1; i < argc; ++i) {
@@ -258,6 +267,8 @@ int main(int argc, char *argv[]) {
       g_flat = true;
     } else if (strcmp(argv[i], "--flat-ssa") == 0) {
       g_flat = true;  // --flat-ssa is an alias for --flat
+    } else if (strcmp(argv[i], "--unflatten_opt") == 0) {
+      g_unflatten_opt = true;
     }
   }
 
@@ -327,11 +338,58 @@ int main(int argc, char *argv[]) {
       std::cerr << "No modules given to --link_blocks" << std::endl;
       return EXIT_FAILURE;
     }
+    // Diagnostic guard: the link pipeline has intermittently produced a
+    // corrupted module (a dangling instruction) that later segfaults the
+    // printer in StoreModuleIRToFile. Verify after each mutation pass so the
+    // corruption is caught loudly, naming the offending pass, instead of
+    // crashing later in an opaque way.
+    auto check_mod = [](llvm::Module& m, const char* stage) {
+      std::string verr;
+      llvm::raw_string_ostream os(verr);
+      if (llvm::verifyModule(m, &os)) {
+        std::cerr << "[link] module corruption detected after '" << stage
+                  << "':\n" << verr << std::endl;
+        return false;
+      }
+      return true;
+    };
+    if (!check_mod(*loaded, "merge")) {
+      return EXIT_FAILURE;
+    }
     remill::InlineFlatISelCalls(loaded.get());
+    if (!check_mod(*loaded, "inline-isel-calls")) {
+      return EXIT_FAILURE;
+    }
     auto &link_module = *loaded;
     remill::LinkFlatBlockExits(&link_module);
-    for (auto &f : link_module) {
-      remill::FixZextPtrToPtrToInt(&f);
+    if (!check_mod(link_module, "link-exits")) {
+      return EXIT_FAILURE;
+    }
+    if (!g_unflatten_edges.empty()) {
+      // Unflatten: merge the block functions into one function with a
+      // real CFG, using the machine edge table as the source of truth.
+      remill::FlatEdgeTable table;
+      std::string eerr;
+      if (!remill::FlatEdgeTable::Load(g_unflatten_edges, &table, &eerr)) {
+        std::cerr << eerr << std::endl;
+        return EXIT_FAILURE;
+      }
+      std::string uerr;
+      if (!remill::UnflattenModule(link_module, table, g_unflatten_name,
+                                   &uerr, g_unflatten_opt)) {
+        std::cerr << uerr << std::endl;
+        return EXIT_FAILURE;
+      }
+    } else {
+      for (auto &f : link_module) {
+        remill::FixZextPtrToPtrToInt(&f);
+      }
+      if (!check_mod(link_module, "fix-zext")) {
+        return EXIT_FAILURE;
+      }
+    }
+    if (!check_mod(link_module, "pre-store")) {
+      return EXIT_FAILURE;
     }
     int ret = EXIT_SUCCESS;
     if (!g_ir_out.empty() &&

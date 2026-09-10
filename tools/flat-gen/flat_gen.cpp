@@ -263,10 +263,38 @@ int main(int argc, char **argv) {
       store_args.push_back(reg_args[i]);
     }
     store_args.push_back(state_alloca);  // state (last argument)
-    ir.CreateCall(flat_store, store_args);
+    auto *state_store_call = ir.CreateCall(flat_store, store_args);
 
-    // The `ret` is now at the end of the entry block, after the flat_store
-    // call. It returns the memory value (the inlined body's return value).
+    // The inlined ISEL body may write a register-write dst operand directly
+    // to the register pointer (bypassing the local State). The state_store
+    // call above then writes the State's (initial) copy of that register back
+    // to the same pointer, clobbering the dst write -- e.g. `imul (mem),%reg`
+    // computes the product but its store is overwritten by the restored RAX,
+    // so the multiply is silently dropped. Move any store to a pointer-typed
+    // operand (a register-write dst) to AFTER the state_store call so the dst
+    // write is the final write to the register.
+    for (auto *op : operand_args) {
+      if (!op->getType()->isPointerTy()) {
+        continue;
+      }
+      std::vector<StoreInst *> dst_stores;
+      for (auto &inst : *entry) {
+        auto *st = dyn_cast<StoreInst>(&inst);
+        if (st && st->getPointerOperand() == op) {
+          dst_stores.push_back(st);
+        }
+      }
+      // Iterate in reverse so the stores keep their original relative order
+      // after the move (moveAfter inserts each one immediately after the
+      // state_store call).
+      for (auto it = dst_stores.rbegin(); it != dst_stores.rend(); ++it) {
+        (*it)->moveAfter(state_store_call);
+      }
+    }
+
+    // The `ret` is now at the end of the entry block, after the state_store
+    // call and any re-ordered dst writes. It returns the memory value (the
+    // inlined body's return value).
 
     ++num_transformed;
   }

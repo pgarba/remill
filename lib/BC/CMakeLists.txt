@@ -20,6 +20,7 @@ add_library(remill_bc STATIC
   "${REMILL_INCLUDE_DIR}/remill/BC/Lifter.h"
   "${REMILL_INCLUDE_DIR}/remill/BC/Optimizer.h"
   "${REMILL_INCLUDE_DIR}/remill/BC/TraceLifter.h"
+  "${REMILL_INCLUDE_DIR}/remill/BC/Unflatten.h"
   "${REMILL_INCLUDE_DIR}/remill/BC/Util.h"
   "${REMILL_INCLUDE_DIR}/remill/BC/Version.h"
 
@@ -30,6 +31,7 @@ add_library(remill_bc STATIC
   IntrinsicTable.cpp
   Optimizer.cpp
   TraceLifter.cpp
+  Unflatten.cpp
   Util.cpp
 )
 

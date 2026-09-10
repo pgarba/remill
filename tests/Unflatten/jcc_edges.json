@@ -1,0 +1,22 @@
+{
+  "0x10b2": {
+    "end": "0x10bd",
+    "kind": "jcc",
+    "lifted": [
+      false,
+      true
+    ],
+    "notaken": "0x10bd",
+    "taken": "0x450"
+  },
+  "0x10bd": {
+    "end": "0x10c8",
+    "kind": "jcc",
+    "lifted": [
+      false,
+      true
+    ],
+    "notaken": "0x10c8",
+    "taken": "0x1270"
+  }
+}

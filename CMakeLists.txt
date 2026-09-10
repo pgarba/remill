@@ -339,6 +339,7 @@ if (REMILL_ENABLE_TESTING)
   # Tests require enabling exports on binaries
   # https://cmake.org/cmake/help/latest/variable/CMAKE_ENABLE_EXPORTS.html#variable:CMAKE_ENABLE_EXPORTS
   set(CMAKE_ENABLE_EXPORTS ON)
+  enable_testing()
 
   find_package(Threads REQUIRED)
   add_custom_target(test_dependencies)
@@ -347,5 +348,7 @@ if (REMILL_ENABLE_TESTING)
     message(STATUS "X86 tests enabled")
     add_subdirectory(tests/X86)
   endif()
+
+  add_subdirectory(tests/Unflatten)
 
 endif()

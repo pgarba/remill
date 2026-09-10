@@ -1,0 +1,18 @@
+{
+  "0x1bdc": {
+    "end": "0x1be1",
+    "kind": "jmp",
+    "lifted": [
+      true
+    ],
+    "target": "0x463"
+  },
+  "0x463": {
+    "end": "0x482",
+    "kind": "jmp",
+    "lifted": [
+      false
+    ],
+    "target": "0x625"
+  }
+}
