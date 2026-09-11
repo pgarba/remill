@@ -3171,8 +3171,8 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   pb.registerLoopAnalyses(lam);
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-  // Run mem2reg + SROA + instcombine + simplifycfg + DCE on the target
-  // function only (not the whole module, to avoid crashes on other functions).
+  // Run mem2reg + SROA + DCE on the target function only (not the whole
+  // module, to avoid crashes on other functions).
   // SROA with ModifyCFG crashes on functions with conditional branches
   // (LLVM assertion in CmpInst::getFlippedStrictnessPredicate), so we
   // skip SROA for those.
@@ -3187,8 +3187,17 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   }
 
   // Run optimization. For branch functions, skip SROA (LLVM 21 assertion
-  // bug) but still run simplifycfg/DCE to reduce size.
-  // IMPORTANT: No InstCombine in the loop — it simplifies GEP chains
+  // bug) but still run DCE to reduce size.
+  //
+  // IMPORTANT: NO SimplifyCFG. This fork's SimplifyCFGPass mis-merges
+  // single-predecessor blocks around the inlined ISEL internals and the
+  // register-file access patterns, silently deleting real loop back-edges
+  // (verified: a 6-loop function collapses to 2 conditional branches while
+  // still passing the verifier, i.e. a silent control-flow corruption, not a
+  // reference error). The block-merge size benefit is not worth the
+  // correctness loss, so SimplifyCFG is forbidden in this pipeline.
+  //
+  // Also no InstCombine in the loop — it simplifies GEP chains
   // (GEP(GEP(RSP,-8),8) → RSP), breaking RSP tracking needed by
   // ForwardStackSlotAccesses. InstCombine runs once at the end, AFTER
   // store-load forwarding is complete.
@@ -3198,7 +3207,6 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
     if (!has_cond_branch) {
       fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
     }
-    fpm.addPass(llvm::SimplifyCFGPass());
     fpm.addPass(llvm::DCEPass());
     fpm.run(*func, fam);
   }
@@ -3210,11 +3218,11 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
     EliminateStackMemoryAccesses(func);
     // Normalize RSP-derived pointers and forward store→load pairs.
     ForwardStackSlotAccesses(func);
-    // Final cleanup: DCE dead stores and instructions.
+    // Final cleanup: DCE dead stores and instructions. (No SimplifyCFG: the
+    // fork's SimplifyCFGPass drops loop back-edges — see the note above.)
     llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::InstCombinePass());
     fpm.addPass(llvm::DCEPass());
-    fpm.addPass(llvm::SimplifyCFGPass());
     fpm.run(*func, fam);
   }
 

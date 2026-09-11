@@ -287,6 +287,25 @@ carried fold away; dead (off-manifest/cold) block bodies empty out —
 expected, since the static prefix is short. Covered by the `jcc_opt` smoke
 scenario (static edge survives optimization).
 
+### Flat-lift pipeline fix (D44) — drop SimplifyCFG from `OptimizeFlatSSAFunction`
+The single-trace `--flat` mode's optimizer (`OptimizeFlatSSAFunction` in
+`lib/BC/Util.cpp`) was running the fork's `SimplifyCFGPass` (in the
+mem2reg/DCE loop **and** the final cleanup). A big varied function
+(~114 insns, 6 nested loops + SIMD `memset`) exposed that this **silently
+drops loop back-edges**: the pre-opt trace is correct (127 BBs, 7 cond
+br, 6 back-edges = the real CFG), but `i0.SimplifyCFG` collapses 127→16
+BBs (back-edges 6→4) and `final.SimplifyCFG` collapses 16→6 (cond 7→2,
+back-edges 4→2). The verifier still passes (no `<badref>`), so it's a
+**silent control-flow corruption**, not a reference error — which is why
+the small fib/loop2 cases looked fine. Fix: remove `SimplifyCFGPass` from
+both sites (mem2reg/SROA/DCE + InstCombine/DCE). Verified: 6/6 (bigfn5),
+6/6 (bigfn4+memset), 2/2 (loop2/psrldq), 1/1 (fib) loops preserved,
+all verifier-clean, `flat_lift` + `unflatten_smoke` still pass. Total
+line count is essentially unchanged (5638 vs 5641); the block count is
+higher because the inlined ISEL-internal blocks are no longer merged.
+This is the flat-lift analogue of the M5 "no SimplifyCFG" rule (D28) —
+the fork's `SimplifyCFGPass` is unsafe in both pipelines.
+
 ## Risks & open questions
 
 1. **RSP as phi-threaded pointer**: each block's stack GEPs use its *input*
