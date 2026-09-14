@@ -30,6 +30,9 @@
 #  include <unistd.h>
 #endif
 
+#include <algorithm>
+
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/IR/BasicBlock.h>
@@ -2347,18 +2350,13 @@ void remill::FixZextPtrToPtrToInt(llvm::Function *func) {
       }
     }
     for (auto *call : to_inline) {
-      auto name = call->getCalledFunction()->getName();
-      if (name.ends_with("neq")) {
-        // __remill_compare_neq(x) = !x
-        auto *xor_inst = llvm::BinaryOperator::CreateXor(
-            call->getArgOperand(0),
-            llvm::ConstantInt::getTrue(call->getArgOperand(0)->getType()),
-            "", call);
-        call->replaceAllUsesWith(xor_inst);
-      } else {
-        // identity: __remill_compare_eq/ult/ule/ugt/uge/sgt(x) = x
-        call->replaceAllUsesWith(call->getArgOperand(0));
-      }
+      // Every __remill_compare_* runtime intrinsic is the identity function
+      // (see tests/X86/Run.cpp: `bool __remill_compare_X(bool r) { return r; }`).
+      // The branch/flag polarity is already encoded in the call ARGUMENT — e.g.
+      // JNZ uses __remill_compare_neq(BNot(FLAG_ZF)) where BNot(FLAG_ZF) is the
+      // "not zero" predicate — so the call is simply replaced by its argument.
+      // (Inlining `neq` as a NOT here inverted every conditional branch.)
+      call->replaceAllUsesWith(call->getArgOperand(0));
       call->eraseFromParent();
     }
   }
@@ -3146,31 +3144,83 @@ void InlineFlatISelCalls(llvm::Module *module) {
 }
 
 // Optimize a pure-SSA flat function after inlining the _flat ISEL wrappers.
-// The inlined _flat wrappers each end with a "state_store" that writes the
-// pre-instruction snapshot back to every REG_* slot. For a register the ISEL
-// body actually modified (via a destination store earlier in the same block),
-// that trailing snapshot store clobbers the computed result, and DCE then
-// deletes the now-dead computation. Remove the clobbering trailing store:
-// for each REG_* slot with more than one store in a block, the LAST store is
-// the state_store snapshot write, so delete it and keep the body's dst store.
+//
+// For a register the ISEL body modified, the inlined wrapper leaves TWO stores
+// to that REG_* slot in one block:
+//   (a) a "dst" store holding the freshly COMPUTED post-instruction value
+//       (a new SSA value produced by the ISEL body), and
+//   (b) a "state_store" snapshot write that stores back the PRE-instruction
+//       value loaded from the same slot at the start of the wrapper.
+// The snapshot write (b) clobbers the computed result (a) and DCE then kills
+// the now-dead computation — which is exactly why a lifted `ret` never made
+// its result observable. We must delete (b) and keep (a).
+//
+// The RELATIVE ORDER of (a) and (b) is not stable: scalarization reorders them
+// differently per opcode. For some (e.g. SHL) the dst store (a) comes first and
+// the snapshot (b) last; for others (e.g. ADD) the snapshot (b) comes first and
+// the dst store (a) last. So a position-based "delete the last store" rule is
+// wrong: it keeps (b) for SHL-style but deletes (a) for ADD-style.
+//
+// Instead identify the clobber by VALUE: a store is a snapshot round-trip iff
+// its value is a load from the SAME slot (optionally behind a bitcast); the dst
+// store holds a freshly computed SSA value. Delete the round-trip stores, but
+// only when a computed store to that slot also exists (if every store is a
+// round-trip the register was unmodified, so leave them alone). This keeps the
+// computed result for every opcode regardless of store ordering.
 static void RemoveStateStoreClobbers(llvm::Function &F) {
   for (auto &BB : F) {
     llvm::DenseMap<llvm::AllocaInst *, std::vector<llvm::StoreInst *>> stores;
+    llvm::DenseMap<llvm::AllocaInst *,
+                   llvm::SmallDenseSet<llvm::Value *>>
+        loaded_values;
     for (auto &I : BB) {
-      auto *SI = llvm::dyn_cast<llvm::StoreInst>(&I);
-      if (!SI) {
-        continue;
+      if (auto *SI = llvm::dyn_cast<llvm::StoreInst>(&I)) {
+        llvm::Value *Base =
+            SI->getPointerOperand()->stripInBoundsOffsets();
+        auto *AI = llvm::dyn_cast<llvm::AllocaInst>(Base);
+        if (AI && AI->getName().starts_with("REG_")) {
+          stores[AI].push_back(SI);
+        }
+      } else if (auto *LI = llvm::dyn_cast<llvm::LoadInst>(&I)) {
+        llvm::Value *Base =
+            LI->getPointerOperand()->stripInBoundsOffsets();
+        auto *AI = llvm::dyn_cast<llvm::AllocaInst>(Base);
+        if (AI && AI->getName().starts_with("REG_")) {
+          loaded_values[AI].insert(LI);
+        }
       }
-      llvm::Value *Base = SI->getPointerOperand()->stripInBoundsOffsets();
-      auto *AI = llvm::dyn_cast<llvm::AllocaInst>(Base);
-      if (!AI || !AI->getName().starts_with("REG_")) {
-        continue;
-      }
-      stores[AI].push_back(SI);
     }
+    auto IsRoundTrip = [&](llvm::StoreInst *SI,
+                           const llvm::SmallDenseSet<llvm::Value *> &Loaded) {
+      llvm::Value *V = SI->getValueOperand();
+      while (auto *BC = llvm::dyn_cast<llvm::BitCastInst>(V)) {
+        V = BC->getOperand(0);
+      }
+      return Loaded.count(V) != 0;
+    };
     for (auto &KV : stores) {
-      if (KV.second.size() >= 2) {
-        KV.second.back()->eraseFromParent();
+      auto *AI = KV.first;
+      const auto &S = KV.second;
+      if (S.size() < 2) {
+        continue;
+      }
+      auto LI = loaded_values.find(AI);
+      if (LI == loaded_values.end()) {
+        continue;
+      }
+      const auto &Loaded = LI->second;
+      bool HasComputed =
+          std::any_of(S.begin(), S.end(),
+                      [&](llvm::StoreInst *SI) { return !IsRoundTrip(SI, Loaded); });
+      if (!HasComputed) {
+        // Every store to this slot just writes back a value read from it; the
+        // instruction did not modify the register. Leave the round-trips alone.
+        continue;
+      }
+      for (auto *SI : S) {
+        if (IsRoundTrip(SI, Loaded)) {
+          SI->eraseFromParent();
+        }
       }
     }
   }
