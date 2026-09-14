@@ -448,8 +448,6 @@ int main(int argc, char *argv[]) {
   remill::OptimizationGuide guide = {};
   remill::OptimizeModule(arch, module, manager.traces, guide);
 
-
-
   // Create a new module in which we will move all the lifted functions. Prepare
   // the module for code of this architecture, i.e. set the data layout, triple,
   // etc.

@@ -3146,6 +3146,36 @@ void InlineFlatISelCalls(llvm::Module *module) {
 }
 
 // Optimize a pure-SSA flat function after inlining the _flat ISEL wrappers.
+// The inlined _flat wrappers each end with a "state_store" that writes the
+// pre-instruction snapshot back to every REG_* slot. For a register the ISEL
+// body actually modified (via a destination store earlier in the same block),
+// that trailing snapshot store clobbers the computed result, and DCE then
+// deletes the now-dead computation. Remove the clobbering trailing store:
+// for each REG_* slot with more than one store in a block, the LAST store is
+// the state_store snapshot write, so delete it and keep the body's dst store.
+static void RemoveStateStoreClobbers(llvm::Function &F) {
+  for (auto &BB : F) {
+    llvm::DenseMap<llvm::AllocaInst *, std::vector<llvm::StoreInst *>> stores;
+    for (auto &I : BB) {
+      auto *SI = llvm::dyn_cast<llvm::StoreInst>(&I);
+      if (!SI) {
+        continue;
+      }
+      llvm::Value *Base = SI->getPointerOperand()->stripInBoundsOffsets();
+      auto *AI = llvm::dyn_cast<llvm::AllocaInst>(Base);
+      if (!AI || !AI->getName().starts_with("REG_")) {
+        continue;
+      }
+      stores[AI].push_back(SI);
+    }
+    for (auto &KV : stores) {
+      if (KV.second.size() >= 2) {
+        KV.second.back()->eraseFromParent();
+      }
+    }
+  }
+}
+
 // Runs: mem2reg + SROA + instcombine. This scalarizes the State allocas that
 // were inlined from the _flat wrappers and simplifies the flag computation
 // patterns.
@@ -3158,6 +3188,11 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
 
   // Eliminate stack memory accesses (RSP ptr → direct load/store).
   EliminateStackMemoryAccesses(func);
+
+  // Remove the state_store snapshot clobber (see RemoveStateStoreClobbers):
+  // without this, the trailing snapshot store to a modified register
+  // discards the instruction's result and DCE deletes the computation.
+  RemoveStateStoreClobbers(*func);
 
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
@@ -3204,7 +3239,11 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   for (int iter = 0; iter < 3; ++iter) {
     llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::PromotePass());  // mem2reg
-    if (!has_cond_branch) {
+    // EXPERIMENT: run SROA even for branched functions, but use PreserveCFG
+    // (the branch-safe variant) to avoid the LLVM-21 ModifyCFG assertion.
+    if (has_cond_branch) {
+      fpm.addPass(llvm::SROAPass(llvm::SROAOptions::PreserveCFG));
+    } else {
       fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
     }
     fpm.addPass(llvm::DCEPass());
