@@ -1,6 +1,40 @@
 # Handoff: flat-lift `ret` result propagation
 
-Status snapshot as of commit `c3a9c9f` on `flat_lifting_v2`.
+## RESOLVED (commit `8668485` + test `f317ebc` on `flat_lifting_v2`)
+
+The `ret` result is now observable end-to-end: the op1 test function lifts and
+executes to `RAX == 10` for `op1(3,7)`, matching the reference, and a
+live-`jne` function returns the correct value on both branch arms. A permanent
+end-to-end execution regression test (`tests/FlatRet`, ctest `flat_ret`) guards
+it and is verified to FAIL on the pre-fix code.
+
+Two bugs were the root cause (both in `lib/BC/Util.cpp`):
+
+1. **`RemoveStateStoreClobbers` deleted by position** ("the last store to each
+   `REG_*` slot"). But scalarization orders the dst (computed) store and the
+   `state_store` snapshot (pre-instruction) store differently per opcode — for
+   SHL the snapshot is last, for ADD the dst store is last — so the position rule
+   kept the computed value for SHL but deleted it for ADD. Fixed to be
+   value-based: a store is a snapshot round-trip iff its value is a load from the
+   SAME slot, and only such stores are removed (and only when a computed store to
+   the slot also exists).
+
+2. **`FixZextPtrToPtrToInt` inlined `__remill_compare_neq(x)` as `!x`**, but the
+   real runtime intrinsic is the identity (`tests/X86/Run.cpp`: `return result`).
+   The polarity is already in the argument (JNZ uses
+   `compare_neq(BNot(FLAG_ZF))`). Inlining it as a NOT inverted every JNZ/JE-style
+   conditional branch — in BOTH the flat path and the general path (the `!x`
+   came from commit `4e82196`). Fixed to inline all `__remill_compare_*` as the
+   identity, matching the runtime.
+
+Verification: `ctest -R "flat|unflatten"` → flat_lift, unflatten_smoke, flat_ret
+all pass. The `flat_ret` test lifts fixed byte blobs (op1 + br3), links each
+against a C harness stubbing `__remill_flat_jump`, drives the function, and
+checks the captured RAX against a reference.
+
+---
+
+Status snapshot as of commit `c3a9c9f` on `flat_lifting_v2` (historical).
 
 ## What is DONE and committed
 
@@ -17,12 +51,19 @@ Status snapshot as of commit `c3a9c9f` on `flat_lifting_v2`.
 - All debug instrumentation (`LIFT_DEBUG_DUMP*`, `OPT_STAGE_A/B/C`) stripped.
   Working tree is clean.
 
-## The OPEN problem: `ret` return value is not observable end-to-end
+## ~~The OPEN problem: `ret` return value is not observable end-to-end~~ — RESOLVED
 
-Goal: confirm `op1(3,7) == 10` by actually executing the lifted function and
-reading its return value. That has **not** been achieved yet, and the reason is
-a genuine (unresolved) question about how a `ret`-terminated flat-lift function
-exposes its result.
+> The answer to the core question below is **(a)**: the dispatch is supposed to
+> carry the computed register file, and the lift was failing to propagate the
+> final RAX into it (bug #1 above), compounded by the inverted JNZ (bug #2).
+> `ret` does NOT route through `@__remill_dynamic_dispatch`; the single trailing
+> `@__remill_flat_jump` dispatch is the boundary, and its RAX argument now holds
+> the computed result. `@__remill_dynamic_dispatch` remains a separate, unrelated
+> runtime work item.
+
+(Historical) Goal: confirm `op1(3,7) == 10` by actually executing the lifted
+function and reading its return value. The open question at the time was how a
+`ret`-terminated flat-lift function exposes its result:
 
 ### Facts established
 
