@@ -48,6 +48,8 @@ remill_disass.egg-info/*
 
 *.o
 *.ll
+# IR test inputs
+!tests/IR2C/*.ll
 *.bc
 
 # Compiled Object files
