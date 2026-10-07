@@ -16,6 +16,9 @@
  *     memory lies between them, so memory order never changes);
  *   - LLVM's signless integers become unsigned C types, with casts where a
  *     signed operation needs them;
+ *   - a vector is its bits (an XMM register: unsigned __int128); lanes are
+ *     shifted and masked out of it, double / float bit casts go through
+ *     memcpy, so scalar SSE math reads as C doubles;
  *   - anything not understood is printed as UNSUPPORTED("<IR>"), which is
  *     left undefined so the C does not compile -- never silently wrong.
  *
@@ -25,6 +28,7 @@
  *   remill-ir2c-21 --ir in.ll [--function NAME] [--out out.c]
  */
 
+#include <llvm/ADT/APFloat.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Function.h>
@@ -40,6 +44,8 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <optional>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -129,9 +135,25 @@ class Printer {
     if (t->isPointerTy()) {
       return 64;
     }
+    if (auto *v = llvm::dyn_cast<llvm::FixedVectorType>(t)) {  // a vector is its bits
+      const unsigned b = static_cast<unsigned>(v->getPrimitiveSizeInBits().getFixedValue());
+      return b == 8 || b == 16 || b == 32 || b == 64 || b == 128 ? b : 0;
+    }
     return t->isIntegerTy() ? t->getIntegerBitWidth() : 0;
   }
+  static bool IsFP(llvm::Type *t) { return t->isDoubleTy() || t->isFloatTy(); }
+  // a vector's lane: its type and width
+  static llvm::Type *Lane(llvm::Type *t) { return llvm::cast<llvm::FixedVectorType>(t)->getElementType(); }
+  static unsigned LaneWidth(llvm::Type *t) {
+    return static_cast<unsigned>(Lane(t)->getPrimitiveSizeInBits().getFixedValue());
+  }
   static std::string CType(llvm::Type *t) {
+    if (t->isDoubleTy()) {
+      return "double";
+    }
+    if (t->isFloatTy()) {
+      return "float";
+    }
     switch (Width(t)) {
       case 1: return "bool";
       case 8: return "uint8_t";
@@ -213,11 +235,43 @@ class Printer {
         ce && (ce->getOpcode() == llvm::Instruction::PtrToInt || ce->getOpcode() == llvm::Instruction::IntToPtr)) {
       v = ce->getOperand(0);
     }
+    const std::string seed = a.getValueAsString().str();
+    if (v->getType()->isVectorTy()) {  // an XMM register: "low,high"
+      const auto bits = VectorBits(llvm::dyn_cast<llvm::Constant>(v));
+      if (!bits || bits->getBitWidth() != 128) {
+        return false;
+      }
+      return std::to_string(bits->trunc(64).getZExtValue()) + "," +
+                 std::to_string(bits->lshr(64).trunc(64).getZExtValue()) ==
+             seed;
+    }
     auto *c = llvm::dyn_cast<llvm::ConstantInt>(v);
     if (!c || c->getBitWidth() > 64) {
       return false;
     }
-    return std::to_string(c->getZExtValue()) == a.getValueAsString().str();
+    return std::to_string(c->getZExtValue()) == seed;
+  }
+  // A vector constant's bits (undef / poison lanes as 0), or nothing.
+  static std::optional<llvm::APInt> VectorBits(const llvm::Constant *c) {
+    auto *vt = c ? llvm::dyn_cast<llvm::FixedVectorType>(c->getType()) : nullptr;
+    if (!vt) {
+      return std::nullopt;
+    }
+    const unsigned ew = LaneWidth(vt), n = vt->getNumElements();
+    llvm::APInt bits(ew * n, 0);
+    for (unsigned k = 0; k < n; ++k) {
+      const llvm::Constant *e = c->getAggregateElement(k);
+      llvm::APInt lane(ew, 0);
+      if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(e)) {
+        lane = ci->getValue();
+      } else if (auto *cf = llvm::dyn_cast_or_null<llvm::ConstantFP>(e)) {
+        lane = cf->getValueAPF().bitcastToAPInt();
+      } else if (!e || !llvm::isa<llvm::UndefValue>(e)) {
+        return std::nullopt;
+      }
+      bits.insertBits(lane, k * ew);
+    }
+    return bits;
   }
   static const llvm::Function *Callee(const llvm::CallBase *c) {
     // match through the operand: getCalledFunction() is not reliable here
@@ -232,6 +286,20 @@ class Printer {
   // ---- values
   Expr Value(const llvm::Value *v);
   Expr Constant(const llvm::ConstantInt *c);
+  Expr Constant(const llvm::APInt &v);
+  Expr Float(const llvm::ConstantFP *c);
+  Expr FCompare(const llvm::FCmpInst *c);
+  Expr Vector(const llvm::Instruction *i);
+  // a vector value's lane k, as its C type (FP lanes as double / float)
+  Expr LaneOf(const llvm::Value *v, unsigned k);
+  // bits as the lane type, and back: double <-> uint64_t through memcpy
+  Expr FromBits(llvm::Type *t, const Expr &bits);
+  Expr ToBits(llvm::Type *t, const Expr &v);
+  void Need(const std::string &name, const std::string &def) {
+    if (helpers_needed.insert(name).second) {
+      helper_defs.push_back(def);
+    }
+  }
   Expr Compute(const llvm::Instruction *i);
   Expr Compare(const llvm::ICmpInst *c, llvm::CmpInst::Predicate pred);
   Expr Negate(const llvm::Value *cond);
@@ -289,12 +357,13 @@ class Printer {
   int temps = 0;
 };
 
-Expr Printer::Constant(const llvm::ConstantInt *c) {
-  const unsigned w = c->getBitWidth();
+Expr Printer::Constant(const llvm::ConstantInt *c) { return Constant(c->getValue()); }
+
+Expr Printer::Constant(const llvm::APInt &v) {
+  const unsigned w = v.getBitWidth();
   if (w == 1) {
-    return {c->isZero() ? "0" : "1", kPrimary};
+    return {v.isZero() ? "0" : "1", kPrimary};
   }
-  const llvm::APInt &v = c->getValue();
   if (w <= 64) {
     return {Hex(v.getZExtValue()), kPrimary};
   }
@@ -306,6 +375,190 @@ Expr Printer::Constant(const llvm::ConstantInt *c) {
     return {"((unsigned __int128)" + Hex(hi) + " << 64)", kPrimary};
   }
   return {"((unsigned __int128)" + Hex(hi) + " << 64 | " + Hex(lo) + ")", kPrimary};
+}
+
+// A double / float literal: the shortest decimal that reads back exactly.
+Expr Printer::Float(const llvm::ConstantFP *c) {
+  const bool f32 = c->getType()->isFloatTy();
+  if (!f32 && !c->getType()->isDoubleTy()) {
+    return Unsupported(c);
+  }
+  const llvm::APFloat &a = c->getValueAPF();
+  const std::string sfx = f32 ? "f" : "";
+  if (a.isNaN()) {
+    return {"__builtin_nan" + sfx + "(\"\")", kPrimary};
+  }
+  if (a.isInfinity()) {
+    return a.isNegative() ? Expr{"-__builtin_inf" + sfx + "()", kUnary} : Expr{"__builtin_inf" + sfx + "()", kPrimary};
+  }
+  const double d = f32 ? static_cast<double>(a.convertToFloat()) : a.convertToDouble();
+  char buf[64] = {};
+  for (int prec = 1; prec <= 17; ++prec) {
+    std::snprintf(buf, sizeof buf, "%.*g", prec, d);
+    if (f32 ? std::strtof(buf, nullptr) == static_cast<float>(d) : std::strtod(buf, nullptr) == d) {
+      break;
+    }
+  }
+  std::string s = buf;
+  if (s.find_first_of(".en") == std::string::npos) {
+    s += ".0";
+  }
+  return {s + sfx, s[0] == '-' ? kUnary : kPrimary};
+}
+
+Expr Printer::FromBits(llvm::Type *t, const Expr &bits) {
+  if (t->isDoubleTy()) {
+    Need("f64_bits", "static inline double f64_bits(uint64_t x) { double d; __builtin_memcpy(&d, &x, 8); return d; }");
+    return {"f64_bits(" + bits.s + ")", kPrimary};
+  }
+  if (t->isFloatTy()) {
+    Need("f32_bits", "static inline float f32_bits(uint32_t x) { float f; __builtin_memcpy(&f, &x, 4); return f; }");
+    return {"f32_bits(" + bits.s + ")", kPrimary};
+  }
+  return Cast(CType(t), bits);
+}
+
+Expr Printer::ToBits(llvm::Type *t, const Expr &v) {
+  if (t->isDoubleTy()) {
+    Need("bits_f64", "static inline uint64_t bits_f64(double d) { uint64_t x; __builtin_memcpy(&x, &d, 8); return x; }");
+    return {"bits_f64(" + v.s + ")", kPrimary};
+  }
+  if (t->isFloatTy()) {
+    Need("bits_f32", "static inline uint32_t bits_f32(float f) { uint32_t x; __builtin_memcpy(&x, &f, 4); return x; }");
+    return {"bits_f32(" + v.s + ")", kPrimary};
+  }
+  return v;
+}
+
+Expr Printer::LaneOf(const llvm::Value *v, unsigned k) {
+  llvm::Type *lt = Lane(v->getType());
+  const unsigned ew = LaneWidth(v->getType());
+  const Expr whole = Value(v);
+  const Expr bits = k == 0 ? Cast(UType(ew), whole)
+                           : Cast(UType(ew), Bin(whole, ">>", {std::to_string(k * ew), kPrimary}, kShift));
+  return lt->isIntegerTy() ? bits : FromBits(lt, bits);
+}
+
+// Vector instructions, on the vector's bits: lanes in and out by shifts.
+Expr Printer::Vector(const llvm::Instruction *i) {
+  using llvm::Instruction;
+  llvm::Type *t = i->getType();
+  const unsigned W = Width(t);
+  auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t);
+  if (!W || !vt || !UType(LaneWidth(t)).size() || !CType(Lane(t)).size()) {
+    return Unsupported(i);
+  }
+  const unsigned ew = LaneWidth(t), n = vt->getNumElements();
+  llvm::Type *lt = Lane(t);
+  // lane k's value (a C expression of the lane type) placed at its bits
+  auto place = [&](const Expr &lane, unsigned k) {
+    const Expr bits = Cast(UType(W), lt->isIntegerTy() ? lane : ToBits(lt, lane));  // unsigned: zero-extends
+    return k == 0 ? bits : Bin(bits, "<<", {std::to_string(k * ew), kPrimary}, kShift);
+  };
+  auto pack = [&](const std::vector<std::optional<Expr>> &lanes) {
+    std::optional<Expr> out;
+    for (unsigned k = 0; k < lanes.size(); ++k) {
+      if (lanes[k]) {
+        const Expr p = place(*lanes[k], k);
+        out = out ? Bin(*out, "|", p, kBitOr) : p;
+      }
+    }
+    return out ? *out : Expr{"0", kPrimary};
+  };
+  if (auto *ie = llvm::dyn_cast<llvm::InsertElementInst>(i)) {
+    auto *idx = llvm::dyn_cast<llvm::ConstantInt>(ie->getOperand(2));
+    if (!idx || idx->getZExtValue() >= n) {
+      return Unsupported(i);
+    }
+    const unsigned k = static_cast<unsigned>(idx->getZExtValue());
+    const Expr lane = place(Value(ie->getOperand(1)), k);
+    const llvm::Value *base = ie->getOperand(0);
+    if (auto *bc = llvm::dyn_cast<llvm::Constant>(base)) {
+      if (auto bits = VectorBits(bc)) {
+        bits->insertBits(llvm::APInt(ew, 0), k * ew);  // the lane being replaced
+        return bits->isZero() ? lane : Bin(Constant(*bits), "|", lane, kBitOr);
+      }
+    }
+    llvm::APInt keep = ~llvm::APInt::getBitsSet(W, k * ew, k * ew + ew);
+    return Bin(Bin(Value(base), "&", Constant(keep), kBitAnd), "|", lane, kBitOr);
+  }
+  if (auto *sv = llvm::dyn_cast<llvm::ShuffleVectorInst>(i)) {
+    const unsigned in_n = llvm::cast<llvm::FixedVectorType>(sv->getOperand(0)->getType())->getNumElements();
+    std::vector<std::optional<Expr>> lanes(n);
+    for (unsigned k = 0; k < n; ++k) {
+      const int m = sv->getMaskValue(k);
+      if (m < 0) {
+        continue;  // undef lane: 0
+      }
+      const llvm::Value *src = sv->getOperand(static_cast<unsigned>(m) < in_n ? 0 : 1);
+      if (auto *sc = llvm::dyn_cast<llvm::Constant>(src); sc && VectorBits(sc) && VectorBits(sc)->isZero()) {
+        continue;
+      }
+      lanes[k] = LaneOf(src, static_cast<unsigned>(m) % in_n);
+    }
+    return pack(lanes);
+  }
+  if (auto *b = llvm::dyn_cast<llvm::BinaryOperator>(i)) {
+    switch (b->getOpcode()) {  // bitwise: on the whole vector
+      case Instruction::And: return Bin(Value(b->getOperand(0)), "&", Value(b->getOperand(1)), kBitAnd);
+      case Instruction::Or: return Bin(Value(b->getOperand(0)), "|", Value(b->getOperand(1)), kBitOr);
+      case Instruction::Xor: return Bin(Value(b->getOperand(0)), "^", Value(b->getOperand(1)), kBitXor);
+      default: break;
+    }
+    const char *op = nullptr;
+    int prec = kAdditive;
+    switch (b->getOpcode()) {  // lane by lane
+      case Instruction::Add: case Instruction::FAdd: op = "+"; break;
+      case Instruction::Sub: case Instruction::FSub: op = "-"; break;
+      case Instruction::Mul: case Instruction::FMul: op = "*"; prec = kMultiplicative; break;
+      case Instruction::FDiv: op = "/"; prec = kMultiplicative; break;
+      default: return Unsupported(i);
+    }
+    std::vector<std::optional<Expr>> lanes(n);
+    for (unsigned k = 0; k < n; ++k) {
+      Expr l = LaneOf(b->getOperand(0), k);
+      if (lt->isIntegerTy() && ew < 32) {
+        l = Cast("uint32_t", l);
+      }
+      lanes[k] = Bin(l, op, LaneOf(b->getOperand(1), k), prec);
+    }
+    return pack(lanes);
+  }
+  if (auto *c = llvm::dyn_cast<llvm::CastInst>(i); c && c->getOpcode() == Instruction::BitCast) {
+    llvm::Type *from = c->getOperand(0)->getType();
+    if (Width(from) == W) {
+      return Value(c->getOperand(0));  // vector <-> vector / integer: the same bits
+    }
+    if (IsFP(from) && from->getPrimitiveSizeInBits() == W) {
+      return Cast(UType(W), ToBits(from, Value(c->getOperand(0))));
+    }
+  }
+  return Unsupported(i);
+}
+
+Expr Printer::FCompare(const llvm::FCmpInst *c) {
+  const Expr a = Value(c->getOperand(0)), b = Value(c->getOperand(1));
+  auto call = [&](const char *fn) { return Expr{std::string(fn) + "(" + a.s + ", " + b.s + ")", kPrimary}; };
+  auto not_ = [&](const Expr &e) { return Expr{"!" + Paren(e, kUnary), kUnary}; };
+  switch (c->getPredicate()) {
+    case llvm::CmpInst::FCMP_FALSE: return {"0", kPrimary};
+    case llvm::CmpInst::FCMP_TRUE: return {"1", kPrimary};
+    case llvm::CmpInst::FCMP_OEQ: return Bin(a, "==", b, kEquality);
+    case llvm::CmpInst::FCMP_OGT: return Bin(a, ">", b, kRelational);
+    case llvm::CmpInst::FCMP_OGE: return Bin(a, ">=", b, kRelational);
+    case llvm::CmpInst::FCMP_OLT: return Bin(a, "<", b, kRelational);
+    case llvm::CmpInst::FCMP_OLE: return Bin(a, "<=", b, kRelational);
+    case llvm::CmpInst::FCMP_ONE: return call("__builtin_islessgreater");
+    case llvm::CmpInst::FCMP_ORD: return not_(call("__builtin_isunordered"));
+    case llvm::CmpInst::FCMP_UNO: return call("__builtin_isunordered");
+    case llvm::CmpInst::FCMP_UEQ: return not_(call("__builtin_islessgreater"));
+    case llvm::CmpInst::FCMP_UGT: return not_(Bin(a, "<=", b, kRelational));
+    case llvm::CmpInst::FCMP_UGE: return not_(Bin(a, "<", b, kRelational));
+    case llvm::CmpInst::FCMP_ULT: return not_(Bin(a, ">=", b, kRelational));
+    case llvm::CmpInst::FCMP_ULE: return not_(Bin(a, ">", b, kRelational));
+    case llvm::CmpInst::FCMP_UNE: return Bin(a, "!=", b, kEquality);
+    default: return Unsupported(c);
+  }
 }
 
 std::string Printer::NewName(const llvm::Value *v) {
@@ -365,8 +618,17 @@ Expr Printer::Value(const llvm::Value *v) {
     }
     return Unsupported(v);
   }
+  if (auto *k = llvm::dyn_cast<llvm::Constant>(v); k && v->getType()->isVectorTy()) {
+    if (const auto bits = VectorBits(k); bits && Width(v->getType())) {
+      return Constant(*bits);
+    }
+    return Unsupported(v);
+  }
   if (auto *c = llvm::dyn_cast<llvm::ConstantInt>(v)) {
     return Constant(c);
+  }
+  if (auto *f = llvm::dyn_cast<llvm::ConstantFP>(v)) {
+    return Float(f);
   }
   if (llvm::isa<llvm::ConstantPointerNull>(v)) {
     return {"0", kPrimary};
@@ -471,6 +733,32 @@ Expr Printer::Intrinsic(const llvm::CallBase *c, const llvm::Function *f) {
     default:
       break;
   }
+  if (IsFP(c->getType())) {  // the libm-like intrinsics: a builtin each
+    const std::string f32 = c->getType()->isFloatTy() ? "f" : "";
+    const char *fn = nullptr;
+    switch (id) {
+      case llvm::Intrinsic::fabs: fn = "fabs"; break;
+      case llvm::Intrinsic::sqrt: fn = "sqrt"; break;
+      case llvm::Intrinsic::floor: fn = "floor"; break;
+      case llvm::Intrinsic::ceil: fn = "ceil"; break;
+      case llvm::Intrinsic::trunc: fn = "trunc"; break;
+      case llvm::Intrinsic::round: fn = "round"; break;
+      case llvm::Intrinsic::rint: fn = "rint"; break;
+      case llvm::Intrinsic::nearbyint: fn = "nearbyint"; break;
+      case llvm::Intrinsic::minnum: fn = "fmin"; break;
+      case llvm::Intrinsic::maxnum: fn = "fmax"; break;
+      case llvm::Intrinsic::copysign: fn = "copysign"; break;
+      case llvm::Intrinsic::fma: fn = "fma"; break;
+      default: break;
+    }
+    if (fn) {
+      std::string s = "__builtin_" + std::string(fn) + f32 + "(";
+      for (unsigned k = 0; k < c->arg_size(); ++k) {
+        s += (k ? ", " : "") + Value(c->getArgOperand(k)).s;
+      }
+      return {s + ")", kPrimary};
+    }
+  }
   return Unsupported(c);
 }
 
@@ -505,6 +793,40 @@ Expr Printer::Negate(const llvm::Value *cond) {
 Expr Printer::Compute(const llvm::Instruction *i) {
   using llvm::Instruction;
   const unsigned w = Width(i->getType());
+  if (i->getType()->isVectorTy() && !llvm::isa<llvm::LoadInst>(i) && !llvm::isa<llvm::FreezeInst>(i) &&
+      !llvm::isa<llvm::SelectInst>(i) && !llvm::isa<llvm::PHINode>(i)) {
+    return Vector(i);
+  }
+  if (auto *s = llvm::dyn_cast<llvm::SelectInst>(i); s && s->getCondition()->getType()->isVectorTy()) {
+    return Unsupported(i);  // a lane-wise select
+  }
+  if (auto *e = llvm::dyn_cast<llvm::ExtractElementInst>(i)) {
+    auto *idx = llvm::dyn_cast<llvm::ConstantInt>(e->getIndexOperand());
+    if (!idx || !Width(e->getVectorOperandType())) {
+      return Unsupported(i);
+    }
+    return LaneOf(e->getVectorOperand(), static_cast<unsigned>(idx->getZExtValue()));
+  }
+  if (auto *c = llvm::dyn_cast<llvm::FCmpInst>(i)) {
+    return FCompare(c);
+  }
+  if (auto *u = llvm::dyn_cast<llvm::UnaryOperator>(i); u && u->getOpcode() == Instruction::FNeg) {
+    return {"-" + Paren(Value(u->getOperand(0)), kUnary), kUnary};
+  }
+  if (auto *b = llvm::dyn_cast<llvm::BinaryOperator>(i); b && IsFP(i->getType())) {
+    const Expr l = Value(b->getOperand(0)), r = Value(b->getOperand(1));
+    switch (b->getOpcode()) {
+      case Instruction::FAdd: return Bin(l, "+", r, kAdditive);
+      case Instruction::FSub: return Bin(l, "-", r, kAdditive);
+      case Instruction::FMul: return Bin(l, "*", r, kMultiplicative);
+      case Instruction::FDiv: return Bin(l, "/", r, kMultiplicative);
+      case Instruction::FRem:
+        return {std::string(i->getType()->isFloatTy() ? "__builtin_fmodf(" : "__builtin_fmod(") + l.s + ", " + r.s +
+                    ")",
+                kPrimary};
+      default: return Unsupported(i);
+    }
+  }
   if (auto *b = llvm::dyn_cast<llvm::BinaryOperator>(i)) {
     const llvm::Value *l = b->getOperand(0), *r = b->getOperand(1);
     auto rc = llvm::dyn_cast<llvm::ConstantInt>(r);
@@ -587,7 +909,23 @@ Expr Printer::Compute(const llvm::Instruction *i) {
         if (from && from == w) {
           return Value(o);
         }
+        if (IsFP(i->getType()) && from == i->getType()->getPrimitiveSizeInBits()) {
+          return FromBits(i->getType(), Value(o));  // the bits as a double / float
+        }
+        if (IsFP(o->getType()) && w == o->getType()->getPrimitiveSizeInBits()) {
+          return ToBits(o->getType(), Value(o));
+        }
         return Unsupported(i);
+      case Instruction::SIToFP:
+        return Cast(CType(i->getType()), from == 1 ? Cast("int", Value(o)) : Signed(o));
+      case Instruction::UIToFP:
+      case Instruction::FPExt:
+      case Instruction::FPTrunc:
+        return Cast(CType(i->getType()), Value(o));
+      case Instruction::FPToSI:
+        return Cast(CType(i->getType()), Cast(SType(w), Value(o)));
+      case Instruction::FPToUI:
+        return Cast(CType(i->getType()), Value(o));
       default:
         return Unsupported(i);
     }
@@ -1104,8 +1442,32 @@ std::string Printer::Print() {
           stmt("__builtin_trap();");  // e.g. #DE: remill's __remill_error, defined as a trap
           continue;
         }
+        if (auto *ms = llvm::dyn_cast<llvm::MemSetInst>(&i)) {  // opt merges adjacent stores into these
+          stmt("__builtin_memset((void *)" + Paren(Address(ms->getDest()), kUnary) + ", " +
+               Value(ms->getValue()).s + ", " + Value(ms->getLength()).s + ");");
+          continue;
+        }
+        if (auto *mt = llvm::dyn_cast<llvm::MemTransferInst>(&i)) {
+          const char *fn = llvm::isa<llvm::MemMoveInst>(mt) ? "__builtin_memmove" : "__builtin_memcpy";
+          stmt(std::string(fn) + "((void *)" + Paren(Address(mt->getDest()), kUnary) + ", (const void *)" +
+               Paren(Address(mt->getSource()), kUnary) + ", " + Value(mt->getLength()).s + ");");
+          continue;
+        }
         if (f && f->isIntrinsic()) {
-          continue;  // assume, lifetime, debug info
+          switch (f->getIntrinsicID()) {
+            case llvm::Intrinsic::assume:
+            case llvm::Intrinsic::lifetime_start:
+            case llvm::Intrinsic::lifetime_end:
+            case llvm::Intrinsic::dbg_declare:
+            case llvm::Intrinsic::dbg_value:
+            case llvm::Intrinsic::dbg_assign:
+            case llvm::Intrinsic::dbg_label:
+            case llvm::Intrinsic::experimental_noalias_scope_decl:
+            case llvm::Intrinsic::donothing:
+            case llvm::Intrinsic::sideeffect:
+            case llvm::Intrinsic::pseudoprobe: continue;  // no effect on the state
+            default: break;  // anything else must not vanish
+          }
         }
         stmt(Unsupported(&i).s + ";");
         continue;
