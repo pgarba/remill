@@ -233,6 +233,8 @@ class Printer {
   Expr Value(const llvm::Value *v);
   Expr Constant(const llvm::ConstantInt *c);
   Expr Compute(const llvm::Instruction *i);
+  Expr Compare(const llvm::ICmpInst *c, llvm::CmpInst::Predicate pred);
+  Expr Negate(const llvm::Value *cond);
   const llvm::Instruction *computing = nullptr;  // the sext being printed (Signed)
   Expr Unsupported(const llvm::Value *v) {
     ++unsupported;
@@ -269,6 +271,7 @@ class Printer {
   void DecideFolding();
   void DecideLiveness();
   std::set<const llvm::Instruction *> live;
+  std::map<const llvm::AtomicCmpXchgInst *, std::pair<std::string, std::string>> cmpxchg_names;  // old, ok
   std::string NewName(const llvm::Value *v);
 
   llvm::Function &F;
@@ -299,6 +302,9 @@ Expr Printer::Constant(const llvm::ConstantInt *c) {
     return {"(unsigned __int128)" + Hex(v.getZExtValue()), kUnary};
   }
   const uint64_t hi = v.lshr(64).trunc(64).getZExtValue(), lo = v.trunc(64).getZExtValue();
+  if (!lo) {
+    return {"((unsigned __int128)" + Hex(hi) + " << 64)", kPrimary};
+  }
   return {"((unsigned __int128)" + Hex(hi) + " << 64 | " + Hex(lo) + ")", kPrimary};
 }
 
@@ -468,6 +474,34 @@ Expr Printer::Intrinsic(const llvm::CallBase *c, const llvm::Function *f) {
   return Unsupported(c);
 }
 
+Expr Printer::Compare(const llvm::ICmpInst *c, llvm::CmpInst::Predicate pred) {
+  const llvm::Value *l = c->getOperand(0), *r = c->getOperand(1);
+  if (!CType(l->getType()).size()) {
+    return Unsupported(c);
+  }
+  switch (pred) {
+    case llvm::CmpInst::ICMP_EQ: return Bin(Value(l), "==", Value(r), kEquality);
+    case llvm::CmpInst::ICMP_NE: return Bin(Value(l), "!=", Value(r), kEquality);
+    case llvm::CmpInst::ICMP_ULT: return Bin(Value(l), "<", Value(r), kRelational);
+    case llvm::CmpInst::ICMP_ULE: return Bin(Value(l), "<=", Value(r), kRelational);
+    case llvm::CmpInst::ICMP_UGT: return Bin(Value(l), ">", Value(r), kRelational);
+    case llvm::CmpInst::ICMP_UGE: return Bin(Value(l), ">=", Value(r), kRelational);
+    case llvm::CmpInst::ICMP_SLT: return Bin(Signed(l), "<", Signed(r), kRelational);
+    case llvm::CmpInst::ICMP_SLE: return Bin(Signed(l), "<=", Signed(r), kRelational);
+    case llvm::CmpInst::ICMP_SGT: return Bin(Signed(l), ">", Signed(r), kRelational);
+    case llvm::CmpInst::ICMP_SGE: return Bin(Signed(l), ">=", Signed(r), kRelational);
+    default: return Unsupported(c);
+  }
+}
+
+// The condition, negated: a folded comparison flips its operator.
+Expr Printer::Negate(const llvm::Value *cond) {
+  if (auto *c = llvm::dyn_cast<llvm::ICmpInst>(cond); c && folded.count(c)) {
+    return Compare(c, c->getInversePredicate());
+  }
+  return {"!" + Paren(Value(cond), kUnary), kUnary};
+}
+
 Expr Printer::Compute(const llvm::Instruction *i) {
   using llvm::Instruction;
   const unsigned w = Width(i->getType());
@@ -480,7 +514,8 @@ Expr Printer::Compute(const llvm::Instruction *i) {
     auto absc = [&] { return Expr{Hex(rc->getValue().abs().getZExtValue()), kPrimary}; };
     // a constant shift count reads best in decimal
     auto count = [&] {
-      return rc && rc->getBitWidth() <= 64 ? Expr{std::to_string(rc->getZExtValue()), kPrimary} : Value(r);
+      return rc && rc->getValue().getActiveBits() <= 64 ? Expr{std::to_string(rc->getZExtValue()), kPrimary}
+                                                         : Value(r);
     };
     // narrow multiply / shift: compute in 32 bits (int promotion could overflow)
     auto wide = [&](const llvm::Value *v) {
@@ -519,23 +554,7 @@ Expr Printer::Compute(const llvm::Instruction *i) {
     }
   }
   if (auto *c = llvm::dyn_cast<llvm::ICmpInst>(i)) {
-    const llvm::Value *l = c->getOperand(0), *r = c->getOperand(1);
-    if (!CType(l->getType()).size()) {
-      return Unsupported(i);
-    }
-    switch (c->getPredicate()) {
-      case llvm::CmpInst::ICMP_EQ: return Bin(Value(l), "==", Value(r), kEquality);
-      case llvm::CmpInst::ICMP_NE: return Bin(Value(l), "!=", Value(r), kEquality);
-      case llvm::CmpInst::ICMP_ULT: return Bin(Value(l), "<", Value(r), kRelational);
-      case llvm::CmpInst::ICMP_ULE: return Bin(Value(l), "<=", Value(r), kRelational);
-      case llvm::CmpInst::ICMP_UGT: return Bin(Value(l), ">", Value(r), kRelational);
-      case llvm::CmpInst::ICMP_UGE: return Bin(Value(l), ">=", Value(r), kRelational);
-      case llvm::CmpInst::ICMP_SLT: return Bin(Signed(l), "<", Signed(r), kRelational);
-      case llvm::CmpInst::ICMP_SLE: return Bin(Signed(l), "<=", Signed(r), kRelational);
-      case llvm::CmpInst::ICMP_SGT: return Bin(Signed(l), ">", Signed(r), kRelational);
-      case llvm::CmpInst::ICMP_SGE: return Bin(Signed(l), ">=", Signed(r), kRelational);
-      default: return Unsupported(i);
-    }
+    return Compare(c, c->getPredicate());
   }
   if (auto *s = llvm::dyn_cast<llvm::SelectInst>(i)) {
     if (!CType(i->getType()).size()) {
@@ -572,6 +591,22 @@ Expr Printer::Compute(const llvm::Instruction *i) {
       default:
         return Unsupported(i);
     }
+  }
+  if (auto *a = llvm::dyn_cast<llvm::AtomicRMWInst>(i)) {
+    const char *fn = nullptr;
+    switch (a->getOperation()) {
+      case llvm::AtomicRMWInst::Xchg: fn = "__atomic_exchange_n"; break;
+      case llvm::AtomicRMWInst::Add: fn = "__atomic_fetch_add"; break;
+      case llvm::AtomicRMWInst::Sub: fn = "__atomic_fetch_sub"; break;
+      case llvm::AtomicRMWInst::And: fn = "__atomic_fetch_and"; break;
+      case llvm::AtomicRMWInst::Or: fn = "__atomic_fetch_or"; break;
+      case llvm::AtomicRMWInst::Xor: fn = "__atomic_fetch_xor"; break;
+      case llvm::AtomicRMWInst::Nand: fn = "__atomic_fetch_nand"; break;
+      default: return Unsupported(i);
+    }
+    return {std::string(fn) + "((" + CType(i->getType()) + " *)" + Paren(Address(a->getPointerOperand()), kUnary) +
+                ", " + Value(a->getValOperand()).s + ", __ATOMIC_SEQ_CST)",
+            kPrimary};
   }
   if (auto *f = llvm::dyn_cast<llvm::FreezeInst>(i)) {
     return Value(f->getOperand(0));
@@ -621,6 +656,10 @@ Expr Printer::Compute(const llvm::Instruction *i) {
     return Unsupported(i);
   }
   if (auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(i)) {
+    if (auto *cx = llvm::dyn_cast<llvm::AtomicCmpXchgInst>(e->getAggregateOperand());
+        cx && e->getNumIndices() == 1 && cmpxchg_names.count(cx)) {  // {old value, success}
+      return {e->getIndices()[0] == 0 ? cmpxchg_names[cx].first : cmpxchg_names[cx].second, kPrimary};
+    }
     // {result, overflow} of an *.with.overflow intrinsic
     auto *c = llvm::dyn_cast<llvm::CallBase>(e->getAggregateOperand());
     auto *f = c ? Callee(c) : nullptr;
@@ -719,8 +758,11 @@ void Printer::DecideFolding() {
                          Width(i.getType()) == 64) ||
                         (llvm::isa<llvm::BitCastInst>(i) && Width(i.getType()) &&
                          Width(i.getType()) == Width(i.getOperand(0)->getType()));
+      if (!noop) {
+        continue;  // (and fence / unreachable have no operand 0)
+      }
       auto *op = llvm::dyn_cast<llvm::Instruction>(i.getOperand(0));
-      if (noop && !i.hasOneUse() && !(op && folded.count(op))) {
+      if (!i.hasOneUse() && !(op && folded.count(op))) {
         folded.insert(&i);
       }
     }
@@ -769,25 +811,33 @@ void Printer::DecideFolding() {
 void Printer::DecideLiveness() {
   std::vector<const llvm::Value *> work;
   auto need = [&](const llvm::Value *v) { work.push_back(v); };
-  for (auto &i : F.front()) {
-    if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
-      if (!IsPCPointer(s->getPointerOperand())) {
+  for (auto &bb : F) {
+    for (auto &i : bb) {
+      if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+        if (!IsPCPointer(s->getPointerOperand())) {
+          need(&i);
+        }
+      } else if (IsFlatJump(&i)) {
+        auto *c = llvm::cast<llvm::CallBase>(&i);
+        for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+          const unsigned an = remill::kFlatFirstRegArgNum + r;
+          if (r != static_cast<int>(remill::kFlatRIPIndex) && an < c->arg_size()) {
+            need(c->getArgOperand(an));
+          }
+        }
+      } else if (auto *rt = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
+        if (!flat && rt->getReturnValue()) {
+          need(rt->getReturnValue());
+        }
+      } else if (auto *br = llvm::dyn_cast<llvm::BranchInst>(&i)) {
+        if (br->isConditional()) {
+          need(br->getCondition());
+        }
+      } else if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(&i)) {
+        need(sw->getCondition());
+      } else if (i.mayHaveSideEffects() && !llvm::isa<llvm::LoadInst>(i)) {
         need(&i);
       }
-    } else if (IsFlatJump(&i)) {
-      auto *c = llvm::cast<llvm::CallBase>(&i);
-      for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
-        const unsigned an = remill::kFlatFirstRegArgNum + r;
-        if (r != static_cast<int>(remill::kFlatRIPIndex) && an < c->arg_size()) {
-          need(c->getArgOperand(an));
-        }
-      }
-    } else if (auto *rt = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
-      if (!flat && rt->getReturnValue()) {
-        need(rt->getReturnValue());
-      }
-    } else if (i.mayHaveSideEffects() && !llvm::isa<llvm::LoadInst>(i)) {
-      need(&i);
     }
   }
   while (!work.empty()) {
@@ -799,14 +849,17 @@ void Printer::DecideLiveness() {
     if (auto *l = llvm::dyn_cast<llvm::LoadInst>(i); l && IsPCPointer(l->getPointerOperand())) {
       // the value last stored to that pointer before the load, if any
       const llvm::Value *stored = nullptr;
-      for (auto &j : F.front()) {
-        if (&j == i) {
-          break;
-        }
-        if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&j); s && s->getPointerOperand() == l->getPointerOperand()) {
-          stored = s->getValueOperand();
+      for (auto &bb : F) {
+        for (auto &j : bb) {
+          if (&j == i) {
+            goto found;
+          }
+          if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&j); s && s->getPointerOperand() == l->getPointerOperand()) {
+            stored = s->getValueOperand();
+          }
         }
       }
+    found:
       if (stored) {
         need(stored);
       }
@@ -820,11 +873,7 @@ void Printer::DecideLiveness() {
 
 std::string Printer::Print() {
   flat = IsFlat();
-  if (F.size() != 1) {
-    ++unsupported;
-    return "#error \"remill-ir2c: @" + F.getName().str() +
-           " has several basic blocks; branches are not supported yet\"\n";
-  }
+  const bool multi = F.size() > 1;
   DecideFolding();
   DecideLiveness();
   for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
@@ -837,77 +886,238 @@ std::string Printer::Print() {
       ++k;
     }
   }
-  std::ostringstream body;
-  std::vector<std::string> outputs;
-  std::string ret;
-  for (auto &i : F.front()) {
-    if (folded.count(&i)) {
-      continue;
-    }
-    if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
-      if (IsPCPointer(s->getPointerOperand())) {  // remill's bookkeeping: not printed
-        pc_store[s->getPointerOperand()] = s->getValueOperand();
+  // every printed value's name, up front: an edge may assign a phi of a later
+  // block. In a function with several blocks they are declared at the top
+  // (C99 has no declaration right after a label).
+  std::map<std::string, std::vector<std::string>> decls;  // type -> names
+  for (auto &bb : F) {
+    for (auto &i : bb) {
+      if (folded.count(&i) || !live.count(&i) || i.getType()->isVoidTy()) {
         continue;
       }
-      const Expr v = Value(s->getValueOperand());
-      body << "    " << Deref(s->getValueOperand()->getType(), s->getPointerOperand()).s << " = " << v.s
-           << ";\n";
-      continue;
-    }
-    if (IsFlatJump(&i)) {  // the exit: the registers that changed
-      auto *c = llvm::cast<llvm::CallBase>(&i);
-      for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
-        if (r == static_cast<int>(remill::kFlatRIPIndex)) {
-          continue;  // remill's synthetic next pc, not the real one
-        }
-        const unsigned an = remill::kFlatFirstRegArgNum + r;
-        if (an >= c->arg_size()) {
-          break;
-        }
-        const llvm::Value *v = c->getArgOperand(an);
-        const llvm::Value *in = F.getArg(an);
-        const llvm::Value *stripped = v;
-        if (auto *p = llvm::dyn_cast<llvm::PtrToIntOperator>(v)) {  // RSP/RBP
-          stripped = p->getPointerOperand();
-        }
-        if (stripped == in || EqualsSeed(v, F.getArg(an))) {
-          continue;  // unchanged
-        }
-        regs_written.insert(r);
-        outputs.push_back("    c->" + RegName(r) + " = " + Value(v).s + ";\n");
+      if (auto *cx = llvm::dyn_cast<llvm::AtomicCmpXchgInst>(&i)) {
+        const std::string base = NewName(&i);
+        cmpxchg_names[cx] = {base + "_old", base + "_ok"};
+        decls[CType(cx->getCompareOperand()->getType())].push_back(base + "_old");
+        decls["bool"].push_back(base + "_ok");
+        continue;
       }
-      continue;
-    }
-    if (auto *rt = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
-      if (!flat && rt->getReturnValue()) {
-        ret = "    return " + Value(rt->getReturnValue()).s + ";\n";
+      if (i.getType()->isStructTy()) {
+        continue;  // read through extractvalue (folded)
       }
-      continue;
+      names[&i] = NewName(&i);
+      const std::string t = CType(i.getType());
+      decls[t.empty() ? "UNSUPPORTED_TYPE" : t].push_back(names[&i]);
     }
-    if (llvm::isa<llvm::FenceInst>(i)) {
-      body << "    __atomic_thread_fence(__ATOMIC_SEQ_CST);\n";
-      continue;
-    }
-    if (i.getType()->isVoidTy()) {
-      if (auto *c = llvm::dyn_cast<llvm::CallBase>(&i); c && Callee(c) && Callee(c)->isIntrinsic()) {
-        continue;  // assume, lifetime, debug info
+  }
+  std::map<const llvm::BasicBlock *, std::string> label;
+  {
+    int n = 0;
+    for (auto &bb : F) {
+      if (&bb != &F.front()) {
+        label[&bb] = "bb" + std::to_string(++n);
       }
-      body << "    " << Unsupported(&i).s << ";\n";
-      continue;
     }
-    if (!live.count(&i)) {
-      continue;  // dead, or feeding only remill's bookkeeping
+  }
+  std::ostringstream body;
+  std::set<std::string> jumped;  // labels a goto / case refers to
+  auto stmt = [&](const std::string &s) { body << "    " << s << "\n"; };
+  // define (one block) or assign (several) a printed value
+  auto define = [&](const llvm::Instruction *i, const std::string &name, const std::string &expr) {
+    const std::string t = CType(i->getType());
+    if (multi) {
+      stmt(name + " = " + expr + ";");
+    } else {
+      stmt((t.empty() ? "UNSUPPORTED_TYPE" : t) + " " + name + " = " + expr + ";");
     }
-    if (i.getType()->isStructTy()) {  // only read through extractvalue (folded)
-      continue;
-    }
-    const std::string type = CType(i.getType());
-    const Expr e = Compute(&i);
-    const std::string name = NewName(&i);
-    names[&i] = name;
-    body << "    " << (type.empty() ? "UNSUPPORTED_TYPE" : type) << " " << name << " = " << e.s << ";\n";
-    if (type.empty()) {
+    if (t.empty()) {
       ++unsupported;
+    }
+  };
+  // the phi assignments on the edge from -> to (through temporaries when one
+  // incoming value is itself a phi of `to`: the copies are parallel)
+  auto edge = [&](const llvm::BasicBlock *from, const llvm::BasicBlock *to) {
+    std::vector<std::pair<const llvm::PHINode *, const llvm::Value *>> copies;
+    bool clash = false;
+    for (auto &phi : to->phis()) {
+      if (!live.count(&phi)) {
+        continue;
+      }
+      const llvm::Value *v = phi.getIncomingValueForBlock(from);
+      if (v == &phi) {
+        continue;  // p = p
+      }
+      if (auto *vp = llvm::dyn_cast<llvm::PHINode>(v); vp && vp->getParent() == to) {
+        clash = true;
+      }
+      copies.push_back({&phi, v});
+    }
+    std::vector<std::string> out;
+    if (!clash) {
+      for (auto &[phi, v] : copies) {
+        out.push_back(names[phi] + " = " + Value(v).s + ";");
+      }
+      return out;
+    }
+    std::string a = "{ ", b;
+    int k = 0;
+    for (auto &[phi, v] : copies) {
+      const std::string tmp = "phi_" + std::to_string(k++);
+      a += CType(phi->getType()) + " " + tmp + " = " + Value(v).s + "; ";
+      b += names[phi] + " = " + tmp + "; ";
+    }
+    out.push_back(a + b + "}");
+    return out;
+  };
+  auto jump = [&](const llvm::BasicBlock *from, const llvm::BasicBlock *to, const llvm::BasicBlock *next,
+                  const std::string &indent) {
+    for (auto &c : edge(from, to)) {
+      stmt(indent + c);
+    }
+    if (to != next) {
+      stmt(indent + "goto " + label[to] + ";");
+      jumped.insert(label[to]);
+    }
+  };
+
+  for (auto it = F.begin(); it != F.end(); ++it) {
+    const llvm::BasicBlock &bb = *it;
+    const llvm::BasicBlock *next = std::next(it) == F.end() ? nullptr : &*std::next(it);
+    if (&bb != &F.front()) {
+      body << label[&bb] << ":\n";
+    }
+    for (auto &i : bb) {
+      if (folded.count(&i) || llvm::isa<llvm::PHINode>(i)) {
+        continue;
+      }
+      if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
+        if (IsPCPointer(s->getPointerOperand())) {  // remill's bookkeeping: not printed
+          pc_store[s->getPointerOperand()] = s->getValueOperand();
+          continue;
+        }
+        const Expr v = Value(s->getValueOperand());
+        stmt(Deref(s->getValueOperand()->getType(), s->getPointerOperand()).s + " = " + v.s + ";");
+        continue;
+      }
+      if (IsFlatJump(&i)) {  // the exit: the registers that changed
+        auto *c = llvm::cast<llvm::CallBase>(&i);
+        for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+          if (r == static_cast<int>(remill::kFlatRIPIndex)) {
+            continue;  // remill's synthetic next pc, not the real one
+          }
+          const unsigned an = remill::kFlatFirstRegArgNum + r;
+          if (an >= c->arg_size()) {
+            break;
+          }
+          const llvm::Value *v = c->getArgOperand(an);
+          const llvm::Value *stripped = v;
+          if (auto *fr = llvm::dyn_cast<llvm::FreezeInst>(stripped)) {  // freeze(x) is x
+            stripped = fr->getOperand(0);
+          }
+          if (auto *p = llvm::dyn_cast<llvm::PtrToIntOperator>(stripped)) {  // RSP/RBP
+            stripped = p->getPointerOperand();
+          }
+          if (stripped == F.getArg(an) || EqualsSeed(v, F.getArg(an))) {
+            continue;  // unchanged
+          }
+          regs_written.insert(r);
+          stmt("c->" + RegName(r) + " = " + Value(v).s + ";");
+        }
+        if (multi) {
+          stmt("return;");
+        }
+        continue;
+      }
+      if (auto *rt = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
+        if (!flat && rt->getReturnValue()) {
+          stmt("return " + Value(rt->getReturnValue()).s + ";");
+        } else if (multi && !flat) {
+          stmt("return;");
+        }
+        continue;
+      }
+      if (auto *br = llvm::dyn_cast<llvm::BranchInst>(&i)) {
+        if (br->isUnconditional()) {
+          jump(&bb, br->getSuccessor(0), next, "");
+          continue;
+        }
+        const llvm::BasicBlock *t = br->getSuccessor(0), *f = br->getSuccessor(1);
+        std::string cond = Value(br->getCondition()).s;
+        if (t == next && f != next) {  // fall into the true side: test the negation
+          std::swap(t, f);
+          cond = Negate(br->getCondition()).s;
+        }
+        const auto tc = edge(&bb, t);
+        jumped.insert(label[t]);
+        if (tc.empty()) {
+          stmt("if (" + cond + ") goto " + label[t] + ";");
+        } else {
+          stmt("if (" + cond + ") {");
+          for (auto &c : tc) {
+            stmt("    " + c);
+          }
+          stmt("    goto " + label[t] + ";");
+          stmt("}");
+        }
+        jump(&bb, f, next, "");
+        continue;
+      }
+      if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(&i)) {
+        stmt("switch (" + Value(sw->getCondition()).s + ") {");
+        for (auto &cs : sw->cases()) {
+          stmt("case " + Constant(cs.getCaseValue()).s + ":");
+          jump(&bb, cs.getCaseSuccessor(), nullptr, "    ");
+        }
+        stmt("default:");
+        jump(&bb, sw->getDefaultDest(), nullptr, "    ");
+        stmt("}");
+        continue;
+      }
+      if (llvm::isa<llvm::UnreachableInst>(i)) {
+        stmt("__builtin_unreachable();");
+        continue;
+      }
+      if (llvm::isa<llvm::FenceInst>(i)) {
+        stmt("__atomic_thread_fence(__ATOMIC_SEQ_CST);");
+        continue;
+      }
+      if (auto *cx = llvm::dyn_cast<llvm::AtomicCmpXchgInst>(&i)) {
+        // *expected = old (C's builtin writes the current value back on failure)
+        const auto &[old, ok] = cmpxchg_names[cx];
+        const std::string t = CType(cx->getCompareOperand()->getType());
+        const std::string call = "__atomic_compare_exchange_n((" + t + " *)" +
+                                 Paren(Address(cx->getPointerOperand()), kUnary) + ", &" + old + ", " +
+                                 Value(cx->getNewValOperand()).s + ", 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);";
+        if (multi) {
+          stmt(old + " = " + Value(cx->getCompareOperand()).s + ";");
+          stmt(ok + " = " + call);
+        } else {
+          stmt(t + " " + old + " = " + Value(cx->getCompareOperand()).s + ";");
+          stmt("bool " + ok + " = " + call);
+        }
+        continue;
+      }
+      if (i.getType()->isVoidTy()) {
+        auto *c = llvm::dyn_cast<llvm::CallBase>(&i);
+        auto *f = c ? Callee(c) : nullptr;
+        if (f && (f->getIntrinsicID() == llvm::Intrinsic::trap || f->getIntrinsicID() == llvm::Intrinsic::ubsantrap)) {
+          stmt("__builtin_trap();");  // e.g. #DE: remill's __remill_error, defined as a trap
+          continue;
+        }
+        if (f && f->isIntrinsic()) {
+          continue;  // assume, lifetime, debug info
+        }
+        stmt(Unsupported(&i).s + ";");
+        continue;
+      }
+      if (!live.count(&i) || i.getType()->isStructTy()) {
+        continue;  // dead, or feeding only remill's bookkeeping; aggregates via extractvalue
+      }
+      if (i.use_empty()) {  // kept for its effect (an atomic)
+        stmt(Compute(&i).s + ";");
+        continue;
+      }
+      define(&i, names[&i], Compute(&i).s);
     }
   }
 
@@ -950,11 +1160,24 @@ std::string Printer::Print() {
     }
     out << ") {\n";
   }
-  out << body.str();
-  for (const auto &o : outputs) {
-    out << o;
+  if (multi) {
+    for (auto &[t, ns] : decls) {
+      std::string line = "    " + t + " ";
+      for (size_t k = 0; k < ns.size(); ++k) {
+        line += (k ? ", " : "") + ns[k];
+      }
+      out << line << ";\n";
+    }
   }
-  out << ret << "}\n";
+  // a label only reached by falling through is dropped (-Wunused-label)
+  std::istringstream lines(body.str());
+  for (std::string l; std::getline(lines, l);) {
+    if (!l.empty() && l.back() == ':' && l.rfind("bb", 0) == 0 && !jumped.count(l.substr(0, l.size() - 1))) {
+      continue;
+    }
+    out << l << "\n";
+  }
+  out << "}\n";
   return out.str();
 }
 
