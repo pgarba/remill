@@ -19,6 +19,9 @@
  *   - a vector is its bits (an XMM register: unsigned __int128); lanes are
  *     shifted and masked out of it, double / float bit casts go through
  *     memcpy, so scalar SSE math reads as C doubles;
+ *   - a call SICE kept (a "sice.call" function of the whole register state,
+ *     returning all of them) is `name(c);`: the registers that changed are
+ *     stored to c first, and the results used are read back right after;
  *   - anything not understood is printed as UNSUPPORTED("<IR>"), which is
  *     left undefined so the C does not compile -- never silently wrong.
  *
@@ -277,6 +280,31 @@ class Printer {
     // match through the operand: getCalledFunction() is not reliable here
     return llvm::dyn_cast<llvm::Function>(c->getCalledOperand()->stripPointerCasts());
   }
+  // a call SICE's !LIFT kept: an opaque function of all registers
+  static const llvm::CallBase *KeptCall(const llvm::Value *v) {
+    auto *c = llvm::dyn_cast<llvm::CallBase>(v);
+    auto *f = c ? Callee(c) : nullptr;
+    return f && f->hasFnAttribute("sice.call") && c->getType()->isStructTy() ? c : nullptr;
+  }
+  // its result for register r (what c->r holds after it)
+  static bool IsKeptResult(const llvm::Value *v, int r) {
+    auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(v);
+    return e && KeptCall(e->getAggregateOperand()) && e->getNumIndices() == 1 &&
+           e->getIndices()[0] == static_cast<unsigned>(r);
+  }
+  // what c->r already holds: the input (or its seed), or a kept call's result
+  bool InCpu(const llvm::Value *v, int r) const {
+    const unsigned an = remill::kFlatFirstRegArgNum + r;
+    const llvm::Value *stripped = v;
+    if (auto *fr = llvm::dyn_cast<llvm::FreezeInst>(stripped)) {  // freeze(x) is x
+      stripped = fr->getOperand(0);
+    }
+    if (auto *p = llvm::dyn_cast<llvm::PtrToIntOperator>(stripped)) {  // RSP/RBP
+      stripped = p->getPointerOperand();
+    }
+    return stripped == F.getArg(an) || EqualsSeed(v, F.getArg(an)) || IsKeptResult(stripped, r);
+  }
+  std::set<std::string> kept_calls;  // their prototypes
   static bool IsFlatJump(const llvm::Instruction *i) {
     auto *c = llvm::dyn_cast<llvm::CallBase>(i);
     auto *f = c ? Callee(c) : nullptr;
@@ -568,8 +596,15 @@ std::string Printer::NewName(const llvm::Value *v) {
     for (char c : v->getName()) {
       base += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
     }
-    while (base.size() > 1 && std::isdigit(static_cast<unsigned char>(base.back()))) {
-      base.pop_back();  // rsp_slot248 -> rsp_slot (LLVM's numbering)
+    for (bool more = true; more;) {
+      more = false;
+      while (base.size() > 1 && std::isdigit(static_cast<unsigned char>(base.back()))) {
+        base.pop_back();  // rsp_slot248 -> rsp_slot (LLVM's numbering)
+      }
+      if (base.size() > 2 && base.compare(base.size() - 2, 2, "_i") == 0) {
+        base.resize(base.size() - 2);  // rsp_next.i -> rsp_next (the inliner's suffix)
+        more = true;
+      }
     }
     while (!base.empty() && base.back() == '_') {
       base.pop_back();
@@ -1059,6 +1094,9 @@ void Printer::DecideFolding() {
       if (i.getType()->isVoidTy() || !i.hasOneUse() || !pure(i)) {
         continue;
       }
+      if (auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(&i); e && KeptCall(e->getAggregateOperand())) {
+        continue;  // read from c right after the call, before anything overwrites it
+      }
       auto *user = llvm::dyn_cast<llvm::Instruction>(*i.user_begin());
       if (!user || user->getParent() != &bb || llvm::isa<llvm::PHINode>(user)) {
         continue;
@@ -1159,8 +1197,9 @@ void Printer::DecideLiveness() {
         auto *c = llvm::cast<llvm::CallBase>(&i);
         for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
           const unsigned an = remill::kFlatFirstRegArgNum + r;
-          if (r != static_cast<int>(remill::kFlatRIPIndex) && an < c->arg_size()) {
-            need(c->getArgOperand(an));
+          if (r != static_cast<int>(remill::kFlatRIPIndex) && an < c->arg_size() &&
+              !InCpu(c->getArgOperand(an), r)) {
+            need(c->getArgOperand(an));  // (one already in c isn't printed)
           }
         }
       } else if (auto *rt = llvm::dyn_cast<llvm::ReturnInst>(&i)) {
@@ -1182,6 +1221,16 @@ void Printer::DecideLiveness() {
     auto *i = llvm::dyn_cast<llvm::Instruction>(work.back());
     work.pop_back();
     if (!i || !live.insert(i).second) {
+      continue;
+    }
+    if (auto *kc = KeptCall(i)) {  // the registers it gets that c doesn't hold yet
+      for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+        const unsigned an = remill::kFlatFirstRegArgNum + r;
+        if (r != static_cast<int>(remill::kFlatRIPIndex) && an < kc->arg_size() &&
+            !InCpu(kc->getArgOperand(an), r)) {
+          need(kc->getArgOperand(an));
+        }
+      }
       continue;
     }
     if (auto *l = llvm::dyn_cast<llvm::LoadInst>(i); l && IsPCPointer(l->getPointerOperand())) {
@@ -1328,6 +1377,36 @@ std::string Printer::Print() {
       if (folded.count(&i) || llvm::isa<llvm::PHINode>(i)) {
         continue;
       }
+      if (auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(&i); e && KeptCall(e->getAggregateOperand())) {
+        continue;  // printed with its call
+      }
+      if (auto *kc = KeptCall(&i)) {  // registers into c, the call, the results used out of c
+        for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+          const unsigned an = remill::kFlatFirstRegArgNum + r;
+          if (r == static_cast<int>(remill::kFlatRIPIndex) || an >= kc->arg_size() ||
+              InCpu(kc->getArgOperand(an), r)) {
+            continue;
+          }
+          regs_written.insert(r);
+          stmt("c->" + RegName(r) + " = " + Value(kc->getArgOperand(an)).s + ";");
+        }
+        const llvm::Function *f = Callee(kc);
+        const std::string name = f->getName().str();
+        kept_calls.insert(name);
+        const std::string at = f->getFnAttribute("sice.call").getValueAsString().str();
+        stmt(name + "(c);" + (at.empty() || at == "0x0" ? "" : "  // call " + at));
+        std::map<unsigned, const llvm::ExtractValueInst *> results;
+        for (auto *u : kc->users()) {
+          if (auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(u); e && live.count(e) && e->getNumIndices() == 1) {
+            results[e->getIndices()[0]] = e;
+          }
+        }
+        for (auto &[r, e] : results) {
+          regs_written.insert(static_cast<int>(r));  // a field of struct cpu
+          define(e, names[e], "c->" + RegName(static_cast<int>(r)));
+        }
+        continue;
+      }
       if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
         if (IsPCPointer(s->getPointerOperand())) {  // remill's bookkeeping: not printed
           pc_store[s->getPointerOperand()] = s->getValueOperand();
@@ -1348,15 +1427,8 @@ std::string Printer::Print() {
             break;
           }
           const llvm::Value *v = c->getArgOperand(an);
-          const llvm::Value *stripped = v;
-          if (auto *fr = llvm::dyn_cast<llvm::FreezeInst>(stripped)) {  // freeze(x) is x
-            stripped = fr->getOperand(0);
-          }
-          if (auto *p = llvm::dyn_cast<llvm::PtrToIntOperator>(stripped)) {  // RSP/RBP
-            stripped = p->getPointerOperand();
-          }
-          if (stripped == F.getArg(an) || EqualsSeed(v, F.getArg(an))) {
-            continue;  // unchanged
+          if (InCpu(v, r)) {
+            continue;  // unchanged, or already there (a kept call's result)
           }
           regs_written.insert(r);
           stmt("c->" + RegName(r) + " = " + Value(v).s + ";");
@@ -1509,6 +1581,12 @@ std::string Printer::Print() {
       last = t;
     }
     out << (fields.empty() ? " };\n\n" : ";\n};\n\n");
+    for (const auto &k : kept_calls) {  // the calls kept: functions of the whole state
+      out << "void " << k << "(struct cpu *c);\n";
+    }
+    if (!kept_calls.empty()) {
+      out << "\n";
+    }
     out << "void " << F.getName().str() << "(struct cpu *c) {\n";
     for (int r : regs_read) {  // inputs, read before any output is written
       out << "    " << RegCType(r) << " " << RegName(r) << " = c->" << RegName(r) << ";\n";

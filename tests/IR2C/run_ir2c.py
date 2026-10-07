@@ -75,8 +75,8 @@ CASES = {
     "stitched_trace.ll": [
         "*(uint32_t *)(rsp - 8) = 0x4011be;",   # the call stand-in
         "*(uint64_t *)0x7ffff7ffcc90",          # sub rsp, [rip+..] in the 2nd segment
-        "__builtin_memset((void *)(rsp_next_i + 0x250), 0, 0x20);",
-        "c->rsp = rsp_next_i;",
+        "__builtin_memset((void *)(rsp_next + 0x250), 0, 0x20);",
+        "c->rsp = rsp_next;",
         "!sice_seg",                            # inlined: no call left
     ],
     # floating point and XMM vectors
@@ -85,6 +85,17 @@ CASES = {
     "fp.ll:conv": ["(uint32_t)(int32_t)a", "(double)f", "(float)a", "__builtin_sqrt(", "__builtin_floorf(",
                    "__builtin_fmax(", "bits_f64(", "bits_f32("],
     "fp.ll:sse": ["f64_bits(", "bits_f64(", "unsigned __int128", ">> 96", "!UNSUPPORTED"],
+    # SICE !LIFT stepping over calls (P), kept as calls: sum_array's result
+    # read back from c, printf's results left in c
+    "kept_calls_trace.ll": [
+        "void sum_array(struct cpu *c);",
+        "c->rdi = 0x404040;\n    sum_array(c);  // call 0x401149\n    uint64_t rax_after = c->rax;",
+        "rax_after & 0xffffffff",
+        "c->rdi = 0x402004;\n    printf_plt(c);  // call 0x401030",
+        "c->rsp = rsp + 8;",
+        "!c->rcx",                              # printf's result, already in c
+        "!xmm",
+    ],
     "mem_intrinsics.ll": [
         "__builtin_memset((void *)d, 0, 0x20);",
         "__builtin_memcpy((void *)(d + 0x40), (const void *)s, 0x10);",
