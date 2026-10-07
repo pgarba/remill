@@ -351,5 +351,6 @@ if (REMILL_ENABLE_TESTING)
 
   add_subdirectory(tests/Unflatten)
   add_subdirectory(tests/FlatRet)
+  add_subdirectory(tests/IR2C)
 
 endif()

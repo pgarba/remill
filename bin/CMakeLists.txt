@@ -13,4 +13,5 @@
 # limitations under the License.
 
 add_subdirectory(lift)
+add_subdirectory(ir2c)
 

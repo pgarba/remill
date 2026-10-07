@@ -61,6 +61,17 @@ inline bool FlatRegIsX87(size_t idx) { return idx >= 52 && idx < 60; }
 inline constexpr size_t kFlatRSPIndex = 6;
 inline constexpr size_t kFlatRBPIndex = 7;
 inline constexpr size_t kFlatRIPIndex = 16;  // 0=RAX,...,15=R15,16=RIP
+// The flat ABI's registers by index (argument kFlatFirstRegArgNum + index).
+inline constexpr const char *kFlatRegNames[kFlatNumRegs] = {
+    "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RSP", "RBP",
+    "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "RIP",
+    "SS_BASE", "GS_BASE", "CS_BASE", "FS_BASE",
+    "CF", "PF", "AF", "ZF", "SF", "DF", "OF",
+    "MM0", "MM1", "MM2", "MM3", "MM4", "MM5", "MM6", "MM7",
+    "XMM0", "XMM1", "XMM2", "XMM3", "XMM4", "XMM5", "XMM6", "XMM7",
+    "XMM8", "XMM9", "XMM10", "XMM11", "XMM12", "XMM13", "XMM14", "XMM15",
+    "ST0", "ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7"};
+
 inline bool FlatRegIsRSP(size_t idx) { return idx == kFlatRSPIndex; }
 inline bool FlatRegIsRBP(size_t idx) { return idx == kFlatRBPIndex; }
 inline bool FlatRegIsStackPtr(size_t idx) { return FlatRegIsRSP(idx) || FlatRegIsRBP(idx); }
