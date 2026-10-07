@@ -103,7 +103,8 @@ class InstructionLifter::Impl {
 
     // Sub-register aliases: all sub-registers map to the same pointer arg
     // as their full-size parent (the ISEL accesses the correct width through
-    // the pointer).
+    // the pointer). AH/BH/CH/DH sit at byte 1, not 0: LoadRegAddress offsets
+    // them by one byte.
     // RAX (0): EAX, AX, AL, AH
     flat_reg_index["EAX"] = 0; flat_reg_index["AX"] = 0;
     flat_reg_index["AL"] = 0; flat_reg_index["AH"] = 0;

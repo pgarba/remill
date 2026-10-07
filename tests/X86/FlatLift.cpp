@@ -35,6 +35,7 @@
 #include "remill/BC/Util.h"
 
 #include <llvm/IR/Function.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -434,6 +435,88 @@ void TestMultiInstrFlatSSA(llvm::Module *module, const Arch &arch,
   Check(!HasConditionalBranch(*func), "no conditional branches");
 }
 
+// ============================================================
+// Test 7: flat-ABI regressions (memory token, AH..DH, compare inlining)
+// ============================================================
+void TestFlatRegressions(llvm::Module *module, const Arch &arch,
+                         IntrinsicTable &intrinsics) {
+  Section("Test 7: flat-ABI regressions");
+  auto jump = module->getFunction("__remill_jump");
+
+  // The exit must pass the memory token threaded through the block (from the
+  // MEMORY alloca), not the entry's argument: otherwise a write's new token is
+  // unused and the memory(none) write intrinsic is deleted as dead.
+  {
+    InstructionLifter lifter(&arch, &intrinsics);
+    lifter.SetFlatMode(true);
+    auto func = arch.DeclareLiftedFunction("F_mem_token", module, /*flat=*/true);
+    arch.InitializeEmptyLiftedFunction(func, /*flat=*/true, /*flat_ssa=*/true);
+    auto &entry = func->getEntryBlock();
+    Check(LiftOne(arch, lifter, entry, 0x7000, {0x89, 0x07}), "lift mov [rdi], eax");
+    AddTerminatingTailCall(&entry, jump, intrinsics);
+    arch.FinishFlatLiftedFunction(func, /*flat_ssa=*/true);
+    llvm::CallInst *exit = nullptr;
+    for (auto &bb : *func)
+      for (auto &inst : bb)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (auto *callee = call->getCalledFunction();
+              callee && callee->getName() == "__remill_flat_jump")
+            exit = call;
+    Check(exit != nullptr, "exit calls __remill_flat_jump");
+    Check(exit && exit->getArgOperand(kFlatMemoryPointerArgNum) !=
+                      NthArgument(func, kFlatMemoryPointerArgNum),
+          "exit passes the threaded memory token, not the entry's");
+  }
+
+  // AH/BH/CH/DH are byte 1 of their GPR: addressed one byte into the alloca.
+  {
+    InstructionLifter lifter(&arch, &intrinsics);
+    lifter.SetFlatMode(true);
+    auto func = arch.DeclareLiftedFunction("F_high_byte", module, /*flat=*/true);
+    arch.InitializeEmptyLiftedFunction(func, /*flat=*/true, /*flat_ssa=*/true);
+    auto &entry = func->getEntryBlock();
+    Check(LiftOne(arch, lifter, entry, 0x7100, {0xb4, 0x41}), "lift mov ah, 0x41");
+    Check(LiftOne(arch, lifter, entry, 0x7102, {0x88, 0xef}), "lift mov bh, ch");
+    Check(CountInFunction(*func, "%AH = getelementptr inbounds i8, ptr %REG_RAX, i32 1") == 1,
+          "AH is byte 1 of REG_RAX");
+    Check(CountInFunction(*func, "%BH = getelementptr inbounds i8, ptr %REG_RBX, i32 1") == 1,
+          "BH is byte 1 of REG_RBX");
+    Check(CountInFunction(*func, "%CH = getelementptr inbounds i8, ptr %REG_RCX, i32 1") == 1,
+          "CH is byte 1 of REG_RCX");
+  }
+
+  // FixZextPtrToPtrToInt inlines the 1-arg i1 -> i1 __remill_compare_*
+  // predicates, and must leave __remill_compare_exchange_memory_N (CMPXCHG)
+  // alone: the shared prefix used to replace it by its memory argument.
+  {
+    auto &ctx = module->getContext();
+    auto *ptr = llvm::PointerType::get(ctx, 0);
+    auto *i1 = llvm::Type::getInt1Ty(ctx);
+    auto *i32 = llvm::Type::getInt32Ty(ctx);
+    auto *i64 = llvm::Type::getInt64Ty(ctx);
+    auto cx = module->getOrInsertFunction(
+        "__remill_compare_exchange_memory_32",
+        llvm::FunctionType::get(ptr, {ptr, i64, ptr, i32}, false));
+    auto pred = module->getOrInsertFunction("__remill_compare_eq",
+                                            llvm::FunctionType::get(i1, {i1}, false));
+    auto *fty = llvm::FunctionType::get(ptr, {ptr, i64, ptr, i32, i1}, false);
+    auto *func = llvm::Function::Create(fty, llvm::GlobalValue::ExternalLinkage,
+                                        "F_compare_inline", module);
+    auto *bb = llvm::BasicBlock::Create(ctx, "", func);
+    llvm::IRBuilder<> ir(bb);
+    auto *mem = ir.CreateCall(cx, {func->getArg(0), func->getArg(1), func->getArg(2),
+                                   func->getArg(3)});
+    auto *flag = ir.CreateCall(pred, {func->getArg(4)});
+    ir.CreateStore(ir.CreateZExt(flag, i32), func->getArg(2));
+    ir.CreateRet(mem);
+    remill::FixZextPtrToPtrToInt(func);
+    Check(CountInFunction(*func, "@__remill_compare_exchange_memory_32(") == 1,
+          "the compare-exchange call survives");
+    Check(CountInFunction(*func, "@__remill_compare_eq(") == 0,
+          "the i1 compare predicate is still inlined");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -461,6 +544,7 @@ int main(int argc, char **argv) {
   TestBranchFlatSSA(module.get(), *arch, intrinsics);
   TestMultiInstrFlat(module.get(), *arch, intrinsics);
   TestMultiInstrFlatSSA(module.get(), *arch, intrinsics);
+  TestFlatRegressions(module.get(), *arch, intrinsics);
 
   // Save the module IR.
   {

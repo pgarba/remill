@@ -429,6 +429,18 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
         auto *val = FindVarInFunction(func, reg_name_str, true).first;
         auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
         if (reg_alloca) {
+          // AH/BH/CH/DH are byte 1 of their GPR, not byte 0 like AL/AX/EAX:
+          // address them one byte into the parent's alloca (as an i8, so a
+          // read loads just that byte). Placed right after the alloca, in the
+          // entry block, so it dominates every use.
+          if (lookup_name.size() == 2 && lookup_name[1] == 'H' &&
+              lookup_name[0] >= 'A' && lookup_name[0] <= 'D') {
+            llvm::IRBuilder<> ir(reg_alloca->getNextNode());
+            auto *i8 = llvm::Type::getInt8Ty(func->getContext());
+            auto *high = ir.CreateConstInBoundsGEP1_32(i8, reg_alloca, 1, lookup_name);
+            reg_ptr_it->second = {high, i8};
+            return reg_ptr_it->second;
+          }
           reg_ptr_it->second = {reg_alloca, reg_alloca->getAllocatedType()};
           return reg_ptr_it->second;
         }

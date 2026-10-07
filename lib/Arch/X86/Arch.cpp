@@ -1948,7 +1948,17 @@ void X86Arch::FinishFlatLiftedFunctionImpl(llvm::Function *func,
     // Load updated register values from the REG_* allocas.
     llvm::SmallVector<llvm::Value *, 64> jump_args;
     jump_args.push_back(remill::NthArgument(func, kFlatPCArgNum));
-    jump_args.push_back(remill::NthArgument(func, kFlatMemoryPointerArgNum));
+    // The memory token as threaded through the block (each memory write
+    // returns a new one, stored to MEMORY), not the entry's argument: with
+    // the entry token a write's result is unused, and its memory(none)
+    // intrinsic call is deleted as dead -- every non-stack store vanished.
+    llvm::Value *memory = remill::NthArgument(func, kFlatMemoryPointerArgNum);
+    if (auto *mem_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(
+            FindVarInFunction(func, kMemoryVariableName, true).first)) {
+      memory = ir.CreateLoad(mem_alloca->getAllocatedType(), mem_alloca,
+                             "memory_out");
+    }
+    jump_args.push_back(memory);
     jump_args.push_back(remill::NthArgument(func, kFlatNextPCArgNum));
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
       auto *val = FindVarInFunction(func, (std::string("REG_") + kRegNames[i]).c_str(), true).first;

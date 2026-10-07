@@ -2345,7 +2345,12 @@ void remill::FixZextPtrToPtrToInt(llvm::Function *func) {
       auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
       if (!call || !call->getCalledFunction()) continue;
       auto name = call->getCalledFunction()->getName();
-      if (name.starts_with("__remill_compare_")) {
+      // Only the 1-arg i1 -> i1 flag predicates: the prefix also matches
+      // __remill_compare_exchange_memory_N (CMPXCHG), which this used to
+      // replace by its memory argument -- the whole compare-exchange vanished.
+      if (name.starts_with("__remill_compare_") && call->arg_size() == 1 &&
+          call->getType()->isIntegerTy(1) &&
+          call->getArgOperand(0)->getType()->isIntegerTy(1)) {
         to_inline.push_back(call);
       }
     }
