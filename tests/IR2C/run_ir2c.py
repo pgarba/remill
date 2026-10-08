@@ -93,6 +93,8 @@ CASES = {
         "rax_after & 0xffffffff",
         "c->rdi = 0x402004;\n    printf_plt(c);  // call 0x401030",
         "c->rsp = rsp + 8;",
+        # printf changed rax (its result is dead, overwritten): c->rax = 0 is a write
+        "printf_plt(c);  // call 0x401030\n    c->rax = 0;",
         "!c->rcx",                              # printf's result, already in c
         "!xmm",
     ],

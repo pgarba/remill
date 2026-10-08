@@ -302,7 +302,39 @@ class Printer {
     if (auto *p = llvm::dyn_cast<llvm::PtrToIntOperator>(stripped)) {  // RSP/RBP
       stripped = p->getPointerOperand();
     }
+    if (auto it = holds.find(r); it != holds.end() && (it->second == v || it->second == stripped)) {
+      return true;
+    }
     return stripped == F.getArg(an) || EqualsSeed(v, F.getArg(an)) || IsKeptResult(stripped, r);
+  }
+  // after a kept call, c holds what it got for each register it didn't
+  // change (SICE passes those by it unchanged)
+  std::map<int, const llvm::Value *> holds;
+  // (the call's "sice.changed" attribute lists the registers it returns
+  // changed; without it, every register is its result)
+  void PassedBy(const llvm::CallBase *kc) {
+    std::set<int> changed;
+    const auto attr = kc->getFnAttr("sice.changed");
+    if (!attr.isStringAttribute()) {
+      for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+        changed.insert(r);
+      }
+    } else {
+      std::istringstream list(attr.getValueAsString().str());
+      for (std::string n; std::getline(list, n, ',');) {
+        if (!n.empty()) {
+          changed.insert(std::atoi(n.c_str()));
+        }
+      }
+    }
+    for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+      const unsigned an = remill::kFlatFirstRegArgNum + r;
+      if (an < kc->arg_size() && !changed.count(r)) {
+        holds[r] = kc->getArgOperand(an);
+      } else {
+        holds.erase(r);
+      }
+    }
   }
   std::set<std::string> kept_calls;  // their prototypes
   static bool IsFlatJump(const llvm::Instruction *i) {
@@ -1187,8 +1219,21 @@ void Printer::DecideFolding() {
 void Printer::DecideLiveness() {
   std::vector<const llvm::Value *> work;
   auto need = [&](const llvm::Value *v) { work.push_back(v); };
+  holds.clear();  // (in program order, as Print goes)
   for (auto &bb : F) {
     for (auto &i : bb) {
+      if (auto *kc = KeptCall(&i)) {
+        need(&i);
+        for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+          const unsigned an = remill::kFlatFirstRegArgNum + r;
+          if (r != static_cast<int>(remill::kFlatRIPIndex) && an < kc->arg_size() &&
+              !InCpu(kc->getArgOperand(an), r)) {
+            need(kc->getArgOperand(an));
+          }
+        }
+        PassedBy(kc);
+        continue;
+      }
       if (auto *s = llvm::dyn_cast<llvm::StoreInst>(&i)) {
         if (!IsPCPointer(s->getPointerOperand())) {
           need(&i);
@@ -1223,15 +1268,8 @@ void Printer::DecideLiveness() {
     if (!i || !live.insert(i).second) {
       continue;
     }
-    if (auto *kc = KeptCall(i)) {  // the registers it gets that c doesn't hold yet
-      for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
-        const unsigned an = remill::kFlatFirstRegArgNum + r;
-        if (r != static_cast<int>(remill::kFlatRIPIndex) && an < kc->arg_size() &&
-            !InCpu(kc->getArgOperand(an), r)) {
-          need(kc->getArgOperand(an));
-        }
-      }
-      continue;
+    if (KeptCall(i)) {
+      continue;  // its arguments: decided above, in order
     }
     if (auto *l = llvm::dyn_cast<llvm::LoadInst>(i); l && IsPCPointer(l->getPointerOperand())) {
       // the value last stored to that pointer before the load, if any
@@ -1306,6 +1344,7 @@ std::string Printer::Print() {
       }
     }
   }
+  holds.clear();
   std::ostringstream body;
   std::set<std::string> jumped;  // labels a goto / case refers to
   auto stmt = [&](const std::string &s) { body << "    " << s << "\n"; };
@@ -1395,6 +1434,7 @@ std::string Printer::Print() {
         kept_calls.insert(name);
         const std::string at = f->getFnAttribute("sice.call").getValueAsString().str();
         stmt(name + "(c);" + (at.empty() || at == "0x0" ? "" : "  // call " + at));
+        PassedBy(kc);
         std::map<unsigned, const llvm::ExtractValueInst *> results;
         for (auto *u : kc->users()) {
           if (auto *e = llvm::dyn_cast<llvm::ExtractValueInst>(u); e && live.count(e) && e->getNumIndices() == 1) {
