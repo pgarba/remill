@@ -87,16 +87,41 @@ CASES = {
     "fp.ll:sse": ["f64_bits(", "bits_f64(", "unsigned __int128", ">> 96", "!UNSUPPORTED"],
     # SICE !LIFT stepping over calls (P), kept as calls: sum_array's result
     # read back from c, printf's results left in c
+    # (saved by an older SICE: the target on the declaration, no typing)
     "kept_calls_trace.ll": [
-        "void sum_array(struct cpu *c);",
-        "c->rdi = 0x404040;\n    sum_array(c);  // call 0x401149\n    uint64_t rax_after = c->rax;",
+        "void sum_array(struct cpu *c, uint64_t target);",
+        "c->rdi = 0x404040;\n    sum_array(c, 0x401149);\n    uint64_t rax_after = c->rax;",
         "rax_after & 0xffffffff",
-        "c->rdi = 0x402004;\n    printf_plt(c);  // call 0x401030",
+        "c->rdi = 0x402004;\n    printf_plt(c, 0x401030);",
         "c->rsp = rsp + 8;",
         # printf changed rax (its result is dead, overwritten): c->rax = 0 is a write
-        "printf_plt(c);  // call 0x401030\n    c->rax = 0;",
+        "printf_plt(c, 0x401030);\n    c->rax = 0;",
         "!c->rcx",                              # printf's result, already in c
         "!xmm",
+    ],
+    # SICE knew the callees' prototypes (libc's table; scale / add from the
+    # debug info, add called through a function pointer): typed calls, the
+    # strings as literals, printf's arguments from its format
+    "typed_calls_trace.ll": [
+        "#include <math.h>\n#include <stdio.h>\n#include <string.h>",
+        "int add(int, int);\nint scale(const char *, int, int);",
+        "c->rax = strlen(\"world\");  // call 0x7ffff7db8a00",
+        "c->rax = scale(\"k\", (int)rax_after, 3);  // call 0x55555555513d",   # no & 0xffffffff, no (int)3
+        "c->rax = add((int)rax_after_2, 2);  // call 0x555555555139",
+        "c->xmm0 = bits_f64(sqrt((double)(int32_t)(uint32_t)rax_after_3));",  # no bits round trip
+        "c->rax = printf(\"hello %s: %d %f\\n\", \"world\", (int)t1, f64_bits((uint64_t)c->xmm0));",
+        "!c->rdi = 0x55555555600a",             # the arguments go to the call, not into c
+        "!c->rsi =",
+        "!struct cpu *c, uint64_t target",      # nothing left opaque
+    ],
+    # a call through a register into mmap'd code (no symbol): indirect_call
+    # with where it went; mmap / memcpy typed
+    "indirect_call_trace.ll": [
+        "void indirect_call(struct cpu *c, uint64_t target);",
+        "indirect_call(c, 0x7ffff7f74000);",
+        "c->rax = (uint64_t)mmap((void *)0, 0x1000, 7, 0x22, -1, 0);",
+        "c->rax = (uint64_t)memcpy((void *)rax_after, (const void *)0x555555556004, 4);",
+        "#include <sys/mman.h>",
     ],
     "mem_intrinsics.ll": [
         "__builtin_memset((void *)d, 0, 0x20);",

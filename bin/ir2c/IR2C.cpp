@@ -312,7 +312,7 @@ class Printer {
   std::map<int, const llvm::Value *> holds;
   // (the call's "sice.changed" attribute lists the registers it returns
   // changed; without it, every register is its result)
-  void PassedBy(const llvm::CallBase *kc) {
+  static std::set<int> Changed(const llvm::CallBase *kc) {
     std::set<int> changed;
     const auto attr = kc->getFnAttr("sice.changed");
     if (!attr.isStringAttribute()) {
@@ -327,6 +327,10 @@ class Printer {
         }
       }
     }
+    return changed;
+  }
+  void PassedBy(const llvm::CallBase *kc) {
+    const std::set<int> changed = Changed(kc);
     for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
       const unsigned an = remill::kFlatFirstRegArgNum + r;
       if (an < kc->arg_size() && !changed.count(r)) {
@@ -337,6 +341,213 @@ class Printer {
     }
   }
   std::set<std::string> kept_calls;  // their prototypes
+
+  // ---- a kept call SICE knew the callee's prototype of: a typed call
+  // (call-site attributes: "sice.fn", "sice.ret", "sice.args" =
+  // "type@where;..." with where a register or "rsp+0x8", the stack at the
+  // call; "sice.header" or "sice.decl"; "sice.str" = "arg:addr:hex;..."
+  // the text of const char * arguments as the call ran)
+  static std::string Attr(const llvm::CallBase *kc, const char *name) {
+    const auto a = kc->getFnAttr(name);
+    return a.isStringAttribute() ? a.getValueAsString().str() : "";
+  }
+  static int RegByName(const std::string &n) {
+    for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
+      if (RegName(r) == n) {
+        return r;
+      }
+    }
+    return -1;
+  }
+  struct TypedArg {
+    std::string type;
+    int reg = -1;         // in this register, else
+    uint64_t stack = 0;   // at rsp + stack
+    std::optional<std::pair<uint64_t, std::string>> text;
+  };
+  // its arguments; nullopt when it isn't typed (or the attribute is off)
+  static std::optional<std::vector<TypedArg>> TypedArgs(const llvm::CallBase *kc) {
+    if (Attr(kc, "sice.fn").empty()) {
+      return std::nullopt;
+    }
+    std::vector<TypedArg> out;
+    std::istringstream list(Attr(kc, "sice.args"));
+    for (std::string a; std::getline(list, a, ';');) {
+      const size_t at = a.rfind('@');
+      if (at == std::string::npos) {
+        return std::nullopt;
+      }
+      TypedArg t;
+      t.type = a.substr(0, at);
+      const std::string where = a.substr(at + 1);
+      if (where.rfind("rsp+", 0) == 0) {
+        t.stack = std::strtoull(where.c_str() + 4, nullptr, 16);
+      } else if ((t.reg = RegByName(where)) < 0) {
+        return std::nullopt;
+      }
+      out.push_back(t);
+    }
+    std::istringstream strs(Attr(kc, "sice.str"));
+    for (std::string e; std::getline(strs, e, ';');) {
+      const size_t c1 = e.find(':'), c2 = e.find(':', c1 + 1);
+      if (c1 == std::string::npos || c2 == std::string::npos) {
+        continue;
+      }
+      const size_t k = std::strtoull(e.c_str(), nullptr, 10);
+      std::string text;
+      for (size_t i = c2 + 1; i + 1 < e.size(); i += 2) {
+        text += static_cast<char>(std::strtoul(e.substr(i, 2).c_str(), nullptr, 16));
+      }
+      if (k < out.size()) {
+        out[k].text = std::pair{std::strtoull(e.c_str() + c1 + 1, nullptr, 16), text};
+      }
+    }
+    return out;
+  }
+  // A value known to be a constant: a literal, or a seeded input's seed.
+  std::optional<uint64_t> ConstOf(const llvm::Value *v) const {
+    if (auto *ce = llvm::dyn_cast<llvm::ConstantExpr>(v);
+        ce && (ce->getOpcode() == llvm::Instruction::PtrToInt || ce->getOpcode() == llvm::Instruction::IntToPtr)) {
+      v = ce->getOperand(0);
+    }
+    if (auto *c = llvm::dyn_cast<llvm::ConstantInt>(v); c && c->getBitWidth() <= 64) {
+      return c->getZExtValue();
+    }
+    if (auto *a = llvm::dyn_cast<llvm::Argument>(v); a && a->getParent() == &F) {
+      const auto seed = F.getAttributes().getParamAttr(a->getArgNo(), "sice.seed");
+      if (seed.isStringAttribute() && !a->getType()->isVectorTy()) {
+        return std::strtoull(seed.getValueAsString().str().c_str(), nullptr, 10);
+      }
+    }
+    return std::nullopt;
+  }
+  static std::string CString(const std::string &s) {
+    std::string out = "\"";
+    for (const char ch : s) {
+      const auto u = static_cast<unsigned char>(ch);
+      switch (ch) {
+        case '\n': out += "\\n"; break;
+        case '\t': out += "\\t"; break;
+        case '\r': out += "\\r"; break;
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        default:
+          if (u < 0x20 || u >= 0x7f) {
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "\\%03o", u);
+            out += buf;
+          } else {
+            out += ch;
+          }
+      }
+    }
+    return out + "\"";
+  }
+  // register r's value going into kc: c->r when c holds it (and it isn't
+  // just a name or a literal), else the value
+  Expr RegArg(const llvm::CallBase *kc, int r, const std::set<int> &stored, unsigned bits = 64) {
+    const llvm::Value *v = kc->getArgOperand(remill::kFlatFirstRegArgNum + r);
+    // for a narrower argument, the bits above it don't matter: x & 0xffffffff, zext x
+    for (bool more = bits < 64; more;) {
+      more = false;
+      if (auto *a = llvm::dyn_cast<llvm::BinaryOperator>(v); a && a->getOpcode() == llvm::Instruction::And) {
+        auto *m = llvm::dyn_cast<llvm::ConstantInt>(a->getOperand(1));
+        if (m && m->getValue().countr_one() >= bits && (folded.count(a) || !live.count(a))) {
+          v = a->getOperand(0);
+          more = true;
+        }
+      } else if (auto *z = llvm::dyn_cast<llvm::ZExtInst>(v);
+                 z && Width(z->getSrcTy()) >= bits && (folded.count(z) || !live.count(z))) {
+        v = z->getOperand(0);
+        more = true;
+      }
+    }
+    if (llvm::isa<llvm::ConstantInt>(v)) {
+      return Value(v);
+    }
+    auto *in = llvm::dyn_cast<llvm::Instruction>(v);
+    if (stored.count(r) && in && !folded.count(in)) {
+      return Value(v);  // its name
+    }
+    if (v == kc->getArgOperand(remill::kFlatFirstRegArgNum + r) && (stored.count(r) || InCpu(v, r))) {
+      regs_written.insert(r);  // a field of struct cpu
+      return {"c->" + RegName(r), kPrimary};
+    }
+    return Value(v);
+  }
+  // the index of the parenthesis closing the one at `open`
+  static size_t Closes(const std::string &s, size_t open) {
+    int depth = 0;
+    for (size_t k = open; k < s.size(); ++k) {
+      depth += s[k] == '(' ? 1 : s[k] == ')' ? -1 : 0;
+      if (depth == 0) {
+        return k;
+      }
+    }
+    return std::string::npos;
+  }
+  // an integer C type's width (0: not one we know)
+  static unsigned IntBits(const std::string &t) {
+    static const std::map<std::string, unsigned> w = {
+        {"char", 8}, {"signed char", 8}, {"unsigned char", 8}, {"_Bool", 8}, {"short", 16},
+        {"unsigned short", 16}, {"int", 32}, {"unsigned int", 32}, {"long", 64}, {"unsigned long", 64},
+        {"long long", 64}, {"unsigned long long", 64}, {"size_t", 64}, {"ssize_t", 64}, {"int8_t", 8},
+        {"uint8_t", 8}, {"int16_t", 16}, {"uint16_t", 16}, {"int32_t", 32}, {"uint32_t", 32},
+        {"int64_t", 64}, {"uint64_t", 64}, {"time_t", 64}, {"off_t", 64}, {"pid_t", 32}};
+    const auto it = w.find(t);
+    return it == w.end() ? 0 : it->second;
+  }
+  // the typed call: its value, the C expression of the call itself
+  Expr TypedCall(const llvm::CallBase *kc, const std::vector<TypedArg> &args, const std::set<int> &stored) {
+    std::string call = Attr(kc, "sice.fn") + "(";
+    for (size_t k = 0; k < args.size(); ++k) {
+      const TypedArg &a = args[k];
+      const bool fp = a.type == "double" || a.type == "float";
+      Expr e;
+      if (a.reg < 0) {  // on the stack
+        const Expr rsp = RegArg(kc, static_cast<int>(remill::kFlatRSPIndex), stored);
+        e = {"*(" + a.type + (a.type.back() == '*' ? "" : " ") + "*)(" + Bin(rsp, "+", {Hex(a.stack), kPrimary}, kAdditive).s + ")", kUnary};
+      } else if (fp) {
+        const Expr bits = RegArg(kc, a.reg, stored);
+        // a value just made from a double's bits: the double
+        const std::string from = a.type == "double" ? "(unsigned __int128)bits_f64(" : "(unsigned __int128)bits_f32(";
+        if (bits.s.rfind(from, 0) == 0 && Closes(bits.s, from.size() - 1) == bits.s.size() - 1) {
+          e = {bits.s.substr(from.size(), bits.s.size() - from.size() - 1), kTernary};
+        } else {
+          e = a.type == "double" ? FromBits(llvm::Type::getDoubleTy(F.getContext()), Cast("uint64_t", bits))
+                                 : FromBits(llvm::Type::getFloatTy(F.getContext()), Cast("uint32_t", bits));
+        }
+      } else {
+        const llvm::Value *v = kc->getArgOperand(remill::kFlatFirstRegArgNum + a.reg);
+        const auto c = ConstOf(v);
+        const unsigned bits = IntBits(a.type);
+        if (a.text && c && *c == a.text->first) {
+          e = {CString(a.text->second), kPrimary};  // the string itself
+        } else if (llvm::isa<llvm::ConstantInt>(v) && a.type.back() != '*' && bits) {
+          // a literal: as the parameter's type takes it (-1 for an int's 0xffffffff)
+          const uint64_t low = bits == 64 ? *c : *c & ((uint64_t(1) << bits) - 1);
+          const bool neg = a.type.rfind("unsigned", 0) != 0 && a.type.rfind("uint", 0) != 0 && a.type != "size_t" &&
+                           a.type != "_Bool" && low >> (bits - 1);
+          e = neg ? Expr{"-" + Hex((bits == 64 ? 0 : uint64_t(1) << bits) - low), kUnary} : Expr{Hex(low), kPrimary};
+          if (neg && bits == 64 && low == uint64_t(1) << 63) {
+            e = Cast(a.type, Value(v));  // (no literal for INT64_MIN)
+          }
+        } else {
+          e = Cast(a.type, RegArg(kc, a.reg, stored, bits ? bits : 64));
+          if (a.text) {
+            std::string t = CString(a.text->second.size() > 40 ? a.text->second.substr(0, 40) + "..." : a.text->second);
+            for (size_t p = t.find("*/"); p != std::string::npos; p = t.find("*/", p)) {
+              t.replace(p, 2, "*\\/");  // (it can't end the comment)
+            }
+            e.s += " /* " + t + " */";
+          }
+        }
+      }
+      call += (k ? ", " : "") + e.s;
+    }
+    return {call + ")", kPrimary};
+  }
+  std::set<std::string> c_headers, c_decls;  // what the typed calls need
   static bool IsFlatJump(const llvm::Instruction *i) {
     auto *c = llvm::dyn_cast<llvm::CallBase>(i);
     auto *f = c ? Callee(c) : nullptr;
@@ -1224,10 +1435,17 @@ void Printer::DecideLiveness() {
     for (auto &i : bb) {
       if (auto *kc = KeptCall(&i)) {
         need(&i);
+        // typed: what goes into c is what it passes by; the arguments are its own
+        const auto typed = TypedArgs(kc);
+        const std::set<int> changed = typed ? Changed(kc) : std::set<int>{};
+        std::set<int> args;
+        for (const auto &a : typed ? *typed : std::vector<TypedArg>{}) {
+          args.insert(a.reg < 0 ? static_cast<int>(remill::kFlatRSPIndex) : a.reg);
+        }
         for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
           const unsigned an = remill::kFlatFirstRegArgNum + r;
           if (r != static_cast<int>(remill::kFlatRIPIndex) && an < kc->arg_size() &&
-              !InCpu(kc->getArgOperand(an), r)) {
+              !InCpu(kc->getArgOperand(an), r) && (!changed.count(r) || args.count(r))) {
             need(kc->getArgOperand(an));
           }
         }
@@ -1420,20 +1638,54 @@ std::string Printer::Print() {
         continue;  // printed with its call
       }
       if (auto *kc = KeptCall(&i)) {  // registers into c, the call, the results used out of c
+        // typed: only the registers it passes by go into c (the others it
+        // changed: its arguments, and what it clobbers)
+        const auto typed = TypedArgs(kc);
+        const std::set<int> changed = typed ? Changed(kc) : std::set<int>{};
+        std::set<int> stored;
         for (int r = 0; r < static_cast<int>(remill::kFlatNumRegs); ++r) {
           const unsigned an = remill::kFlatFirstRegArgNum + r;
           if (r == static_cast<int>(remill::kFlatRIPIndex) || an >= kc->arg_size() ||
-              InCpu(kc->getArgOperand(an), r)) {
+              InCpu(kc->getArgOperand(an), r) || changed.count(r)) {
             continue;
           }
           regs_written.insert(r);
+          stored.insert(r);
           stmt("c->" + RegName(r) + " = " + Value(kc->getArgOperand(an)).s + ";");
         }
         const llvm::Function *f = Callee(kc);
-        const std::string name = f->getName().str();
-        kept_calls.insert(name);
-        const std::string at = f->getFnAttribute("sice.call").getValueAsString().str();
-        stmt(name + "(c);" + (at.empty() || at == "0x0" ? "" : "  // call " + at));
+        std::string at = Attr(kc, "sice.target");
+        if (at.empty()) {  // (older SICE: on the declaration)
+          at = f->getFnAttribute("sice.call").getValueAsString().str();
+        }
+        if (at.empty()) {
+          at = "0";
+        }
+        if (typed) {
+          const std::string ret = Attr(kc, "sice.ret");
+          const Expr call = TypedCall(kc, *typed, stored);
+          const std::string note = at == "0" || at == "0x0" ? "" : "  // call " + at;
+          if (const std::string h = Attr(kc, "sice.header"); !h.empty()) {
+            c_headers.insert(h);
+          } else if (const std::string d = Attr(kc, "sice.decl"); !d.empty()) {
+            c_decls.insert(d + ";");
+          }
+          if (ret == "void" || ret.empty()) {
+            stmt(call.s + ";" + note);
+          } else if (ret == "double" || ret == "float") {
+            const int x0 = RegByName("xmm0");
+            regs_written.insert(x0);
+            stmt("c->xmm0 = " + ToBits(ret == "double" ? llvm::Type::getDoubleTy(F.getContext())
+                                                       : llvm::Type::getFloatTy(F.getContext()), call).s + ";" + note);
+          } else {
+            regs_written.insert(0);
+            stmt("c->rax = " + (ret.back() == '*' ? Cast("uint64_t", call).s : call.s) + ";" + note);
+          }
+        } else {
+          const std::string name = f->getName().str();
+          kept_calls.insert(name);
+          stmt(name + "(c, " + at + ");");
+        }
         PassedBy(kc);
         std::map<unsigned, const llvm::ExtractValueInst *> results;
         for (auto *u : kc->users()) {
@@ -1597,7 +1849,11 @@ std::string Printer::Print() {
 
   std::ostringstream out;
   out << "// remill-ir2c: @" << F.getName().str() << (flat ? " (remill flat ABI)" : "") << "\n";
-  out << "#include <stdbool.h>\n#include <stdint.h>\n\n";
+  out << "#include <stdbool.h>\n#include <stdint.h>\n";
+  for (const auto &h : c_headers) {  // the typed calls' functions
+    out << "#include <" << h << ">\n";
+  }
+  out << "\n";
   for (const auto &h : helper_defs) {
     out << h << "\n";
   }
@@ -1621,10 +1877,13 @@ std::string Printer::Print() {
       last = t;
     }
     out << (fields.empty() ? " };\n\n" : ";\n};\n\n");
-    for (const auto &k : kept_calls) {  // the calls kept: functions of the whole state
-      out << "void " << k << "(struct cpu *c);\n";
+    for (const auto &k : kept_calls) {  // the calls kept: functions of the whole state, and where they went
+      out << "void " << k << "(struct cpu *c, uint64_t target);\n";
     }
-    if (!kept_calls.empty()) {
+    for (const auto &d : c_decls) {  // typed calls of functions no header declares
+      out << d << "\n";
+    }
+    if (!kept_calls.empty() || !c_decls.empty()) {
       out << "\n";
     }
     out << "void " << F.getName().str() << "(struct cpu *c) {\n";
