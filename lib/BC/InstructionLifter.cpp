@@ -253,7 +253,7 @@ LiftStatus InstructionLifter::LiftIntoBlock(Instruction &arch_inst,
       "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
       "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"};
     for (size_t i = 0; i < kFlatNumRegs; ++i) {
-      auto reg_name_str = (std::string("REG_") + kRegNames60[i]).c_str();
+      const std::string reg_name_str = std::string("REG_") + kRegNames60[i];
       auto *val = FindVarInFunction(func, reg_name_str, true).first;
       auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
       if (reg_alloca) {
@@ -425,7 +425,7 @@ InstructionLifter::LoadRegAddress(llvm::BasicBlock *block,
             "XMM8","XMM9","XMM10","XMM11","XMM12","XMM13","XMM14","XMM15",
             "ST0","ST1","ST2","ST3","ST4","ST5","ST6","ST7"
         };
-        auto reg_name_str = (std::string("REG_") + kRegNames[idx]).c_str();
+        const std::string reg_name_str = std::string("REG_") + kRegNames[idx];
         auto *val = FindVarInFunction(func, reg_name_str, true).first;
         auto *reg_alloca = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
         if (reg_alloca) {
