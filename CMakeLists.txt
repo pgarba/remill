@@ -112,6 +112,18 @@ endforeach()
 list(REMOVE_ITEM LLVM_LIBRARIES LLVMMC LLVMCore LLVMSupport)
 list(APPEND LLVM_LIBRARIES LLVMMC LLVMCore LLVMSupport)
 
+# A distribution's LLVM (apt.llvm.org) wires some static libraries to its
+# shared libLLVM, so mixing the two registers LLVM's options twice: link the
+# shared library alone instead.
+option(REMILL_LINK_LLVM_DYLIB "Link LLVM's shared library (libLLVM) instead of its static libraries" OFF)
+if(REMILL_LINK_LLVM_DYLIB)
+  if(NOT TARGET LLVM)
+    message(FATAL_ERROR "REMILL_LINK_LLVM_DYLIB: this LLVM has no shared library target (LLVM)")
+  endif()
+  set(LLVM_LIBRARIES LLVM)
+  message(STATUS "Linking LLVM's shared library")
+endif()
+
 target_link_libraries(thirdparty_llvm INTERFACE
   ${LLVM_LIBRARIES}
 )
