@@ -91,6 +91,11 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BCCompiler.cmake")
 
 # Go find only the static libraries of LLVM, and link against those.
 foreach(LLVM_LIB IN LISTS LLVM_AVAILABLE_LIBS)
+  # a distribution's LLVM can list libraries it doesn't ship (apt.llvm.org's
+  # LLVM 21: the BOLT ones)
+  if(NOT TARGET ${LLVM_LIB})
+    continue()
+  endif()
   get_target_property(LLVM_LIB_TYPE ${LLVM_LIB} TYPE)
   if(LLVM_LIB_TYPE STREQUAL "STATIC_LIBRARY")
     list(APPEND LLVM_LIBRARIES "${LLVM_LIB}")
