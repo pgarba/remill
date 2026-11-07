@@ -189,9 +189,13 @@ target_include_directories(remill_settings INTERFACE
   $<INSTALL_INTERFACE:include>)
 
 if(WIN32)
+  # the C runtime: the one the LLVM build chose, when its LLVMConfig says
+  # (LLVM's Windows release packages link the static one), else the DLL
+  if(NOT CMAKE_MSVC_RUNTIME_LIBRARY)
+    target_compile_options(remill_settings INTERFACE "$<$<CONFIG:Debug>:/MDd>$<$<CONFIG:Release>:/MD>")
+  endif()
   # warnings and compiler settings
   target_compile_options(remill_settings INTERFACE
-    "$<$<CONFIG:Debug>:/MDd>$<$<CONFIG:Release>:/MD>"
     /nologo /W3 /EHsc /wd4141 /wd4146 /wd4180 /wd4244
     /wd4258 /wd4267 /wd4291 /wd4345 /wd4351 /wd4355 /wd4456
     /wd4457 /wd4458 /wd4459 /wd4503 /wd4624 /wd4722 /wd4800
@@ -199,7 +203,6 @@ if(WIN32)
     /wd4245 /wd4706 /wd4310 /wd4701 /wd4703 /wd4389 /wd4611
     /wd4805 /wd4204 /wd4577 /wd4091 /wd4592 /wd4324 
     -Xclang -mlong-double-80 /DLLVM_FORCE_USE_OLD_TOOLCHAIN
-    -fmsc-version=1930
   )
 
   target_compile_definitions(remill_settings INTERFACE
