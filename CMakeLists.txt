@@ -96,6 +96,12 @@ foreach(LLVM_LIB IN LISTS LLVM_AVAILABLE_LIBS)
   if(NOT TARGET ${LLVM_LIB})
     continue()
   endif()
+  # nor what remill doesn't use and that drags in more: Polly and the opt
+  # driver link the shared libLLVM next to the static libraries (options
+  # registered twice), Exegesis needs libpfm
+  if(LLVM_LIB MATCHES "^(Polly|LLVMOptDriver|LLVMExegesis)")
+    continue()
+  endif()
   get_target_property(LLVM_LIB_TYPE ${LLVM_LIB} TYPE)
   if(LLVM_LIB_TYPE STREQUAL "STATIC_LIBRARY")
     list(APPEND LLVM_LIBRARIES "${LLVM_LIB}")
