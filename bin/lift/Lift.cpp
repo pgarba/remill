@@ -16,6 +16,7 @@
 
 
 #include "remill/BC/Logging.h"
+#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/IRBuilder.h>
@@ -98,6 +99,7 @@ static std::string g_bc_out;
 static std::string g_slice_inputs;
 static std::string g_slice_outputs;
 static bool g_flat = false;      // Flat mode: by-value register args, pure SSA
+static std::string g_semantics;   // --semantics FILE|-: the semantics bitcode (- = stdin)
 static std::string g_link_blocks;  // Standalone: link flat block exits in a module
 static std::string g_unflatten_edges;  // Standalone: edge table (edges.json)
 static std::string g_unflatten_name = "main";  // name of the unflattened fn
@@ -255,6 +257,7 @@ int main(int argc, char *argv[]) {
   g_ir_out = GetArgValue(argc, argv, "--ir_out");
   g_bc_out = GetArgValue(argc, argv, "--bc_out");
   g_link_blocks = GetArgValue(argc, argv, "--link_blocks");
+  g_semantics = GetArgValue(argc, argv, "--semantics");
   g_unflatten_edges = GetArgValue(argc, argv, "--unflatten");
   g_unflatten_name = GetArgValue(argc, argv, "--unflatten_name");
   if (g_unflatten_name.empty()) {
@@ -405,7 +408,26 @@ int main(int argc, char *argv[]) {
 
   // Load the appropriate semantics bitcode.
   std::unique_ptr<llvm::Module> module;
-  if (g_flat) {
+  if (!g_semantics.empty()) {
+    // Given bitcode (a file, or - for stdin), not the semantics search path:
+    // lets a program that embeds the semantics hand them over.
+    auto buf = g_semantics == "-" ? llvm::MemoryBuffer::getSTDIN()
+                                  : llvm::MemoryBuffer::getFile(g_semantics);
+    if (!buf) {
+      std::cerr << "Unable to read --semantics " << g_semantics << ": "
+                << buf.getError().message() << std::endl;
+      return EXIT_FAILURE;
+    }
+    const auto bytes = (*buf)->getBuffer();
+    module = remill::LoadArchSemantics(
+        arch.get(), llvm::ArrayRef<uint8_t>(
+                  reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size()));
+    if (!module) {
+      std::cerr << "Unable to load the semantics from --semantics "
+                << g_semantics << std::endl;
+      return EXIT_FAILURE;
+    }
+  } else if (g_flat) {
     // Pure-SSA mode: load the flat bitcode with _flat ISEL wrappers.
     auto arch_name = remill::GetArchName(arch->arch_name);
     std::string path = remill::FindFlatSemanticsBitcodeFile(arch_name);

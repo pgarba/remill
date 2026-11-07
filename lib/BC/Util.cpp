@@ -68,6 +68,8 @@
 #include "remill/BC/Compat/DebugInfo.h"
 #include "remill/BC/Compat/GlobalValue.h"
 #include "remill/BC/Compat/IRReader.h"
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include "remill/BC/Compat/ToolOutputFile.h"
 #include "remill/BC/Compat/VectorType.h"
 #include "remill/BC/Compat/Verifier.h"
@@ -440,12 +442,28 @@ std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch) {
   llvm::outs() << "Loading " << arch_name << " semantics from file " << path
                << "\n";
   auto module = LoadModuleFromFile(arch->context, path);
+  PrepareSemanticsModule(arch, module);
+  return module;
+}
+
+std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch,
+                                                llvm::ArrayRef<uint8_t> bitcode) {
+  auto module = LoadModuleFromMemory(arch->context, bitcode,
+                                     GetArchName(arch->arch_name));
+  PrepareSemanticsModule(arch, module);
+  return module;
+}
+
+void PrepareSemanticsModule(const Arch *arch,
+                            std::unique_ptr<llvm::Module> &module) {
+  if (!module) {
+    return;
+  }
   arch->PrepareModule(module);
   arch->InitFromSemanticsModule(module.get());
   for (auto &func : *module) {
     Annotate<remill::Semantics>(&func);
   }
-  return module;
 }
 
 // Try to verify a module.
@@ -482,6 +500,37 @@ LoadModuleFromFile(llvm::LLVMContext *context,
 
   if (!VerifyModule(module.get())) {
     LOG(ERROR) << "Error verifying module read from file " << file_name;
+    return {};
+  }
+
+  return module;
+}
+
+// Reads an LLVM module from bitcode (or textual IR) in memory.
+std::unique_ptr<llvm::Module>
+LoadModuleFromMemory(llvm::LLVMContext *context, llvm::ArrayRef<uint8_t> bitcode,
+                     std::string_view name) {
+  llvm::SMDiagnostic err;
+  const llvm::StringRef bytes(reinterpret_cast<const char *>(bitcode.data()),
+                              bitcode.size());
+  const llvm::MemoryBufferRef buffer(bytes,
+                                     llvm::StringRef(name.data(), name.size()));
+  auto module = llvm::parseIR(buffer, err, *context);
+
+  if (!module) {
+    llvm::outs() << "Unable to parse module " << name << ": "
+                 << err.getMessage().str();
+    return {};
+  }
+
+  auto ec = module->materializeAll();  // Just in case.
+  if (ec) {
+    LOG(ERROR) << "Unable to materialize everything from " << name;
+    return {};
+  }
+
+  if (!VerifyModule(module.get())) {
+    LOG(ERROR) << "Error verifying module read from " << name;
     return {};
   }
 

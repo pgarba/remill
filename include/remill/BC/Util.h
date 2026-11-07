@@ -24,6 +24,7 @@
 #pragma clang diagnostic ignored "-Wdocumentation"
 #pragma clang diagnostic ignored "-Wswitch-enum"
 #include <remill/BC/Compat/CTypes.h>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
@@ -156,9 +157,25 @@ bool VerifyModule(llvm::Module *module);
 std::unique_ptr<llvm::Module>
 LoadModuleFromFile(llvm::LLVMContext *context, std::filesystem::path file_name);
 
+// Parses and loads a module from bitcode (or textual IR) held in memory;
+// `name` labels it in diagnostics.
+std::unique_ptr<llvm::Module>
+LoadModuleFromMemory(llvm::LLVMContext *context, llvm::ArrayRef<uint8_t> bitcode,
+                     std::string_view name = "<memory>");
+
 // Loads the semantics for the `arch`-specific machine, i.e. the machine of the
 // code that we want to lift.
 std::unique_ptr<llvm::Module> LoadArchSemantics(const Arch *arch);
+
+// The same from a semantics bitcode array (e.g. one embedded in a program)
+// instead of a file found on the semantics search path.
+std::unique_ptr<llvm::Module>
+LoadArchSemantics(const Arch *arch, llvm::ArrayRef<uint8_t> bitcode);
+
+// Readies a loaded semantics module for lifting with `arch`: what both
+// LoadArchSemantics do after loading.
+void PrepareSemanticsModule(const Arch *arch,
+                            std::unique_ptr<llvm::Module> &module);
 
 inline std::unique_ptr<llvm::Module>
 LoadArchSemantics(const std::unique_ptr<const Arch> &arch) {
