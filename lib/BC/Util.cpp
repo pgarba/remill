@@ -22,6 +22,7 @@
 #include <sstream>
 #include <system_error>
 #include <unordered_map>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -2616,6 +2617,35 @@ static void EliminateStackMemoryAccesses(llvm::Function *func) {
   }
 }
 
+// Once the stack is accessed with loads and stores, the memory intrinsics
+// that are left (an access through a computed pointer, an atomic region)
+// are no longer pure functions of the memory token: such an access can be
+// to the stack too (lea rcx, [rsp+0x20] / mov [rcx+K], al), and the token
+// does not order it with the stack's stores, which no longer take part in
+// it. As memory(none) calls they were moved (InstCombine sinks a read to
+// its user, past the stack stores after it) and jumped over by
+// store-to-load forwarding. They keep their place as calls that may read
+// and write memory; a consumer lowers them where they are.
+static void PinMemoryIntrinsics(llvm::Function *func) {
+  for (auto &block : *func) {
+    for (auto &inst : block) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      auto *callee = call ? call->getCalledFunction() : nullptr;
+      if (!callee) continue;
+      auto name = callee->getName();
+      if (!name.starts_with("__remill_read_memory_") &&
+          !name.starts_with("__remill_write_memory_") &&
+          !name.starts_with("__remill_compare_exchange_memory_") &&
+          !name.starts_with("__remill_fetch_and_") &&
+          !name.starts_with("__remill_atomic_") &&
+          !name.starts_with("__remill_barrier_"))
+        continue;
+      callee->removeFnAttr(llvm::Attribute::Memory);
+      call->removeFnAttr(llvm::Attribute::Memory);
+    }
+  }
+}
+
 // Stack frame reconstruction: normalize all RSP/RBP-derived pointers to
 // GEP(initial_RSP, total_offset), then forward store→load pairs and
 // eliminate dead stores. This makes the IR look like compiler output.
@@ -2639,11 +2669,12 @@ static void ForwardStackSlotAccesses(llvm::Function *func) {
   // Map: Value* → cumulative byte offset from initial RSP.
   llvm::DenseMap<llvm::Value *, int64_t> offsets;
   offsets[rsp_arg] = 0;
-  if (rbp_arg) offsets[rbp_arg] = 0;
+  // Not RBP: its distance from RSP is not known here, and an RBP-relative
+  // access rewritten as GEP(RSP, same offset) is an access to another slot.
+  (void) rbp_arg;
 
   llvm::SmallVector<llvm::Value *> worklist;
   worklist.push_back(rsp_arg);
-  if (rbp_arg) worklist.push_back(rbp_arg);
 
   size_t wl_idx = 0;
   while (wl_idx < worklist.size()) {
@@ -2748,14 +2779,53 @@ static void ForwardStackSlotAccesses(llvm::Function *func) {
               ->getSourceElementType() != i8)
         continue;
 
-      // Search backwards for a store to the same pointer.
+      // The bytes [off, off + size) of the frame a canonical pointer names
+      auto slot = [&](llvm::Value *ptr, llvm::Type *ty)
+          -> std::optional<std::pair<int64_t, int64_t>> {
+        int64_t off = 0;
+        if (ptr != rsp_arg) {
+          auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(ptr);
+          if (!gep || gep->getSourceElementType() != i8 ||
+              gep->getPointerOperand() != rsp_arg || gep->getNumIndices() != 1)
+            return std::nullopt;
+          auto *ci = llvm::dyn_cast<llvm::ConstantInt>(gep->getOperand(1));
+          if (!ci) return std::nullopt;
+          off = ci->getSExtValue();
+        }
+        const auto size = func->getParent()->getDataLayout().getTypeStoreSize(ty);
+        if (size.isScalable()) return std::nullopt;
+        return std::pair<int64_t, int64_t>{
+            off, off + static_cast<int64_t>(size.getFixedValue())};
+      };
+      const auto load_slot = slot(load_ptr, load->getType());
+      if (!load_slot) continue;
+
+      // Search backwards for the store this load reads: to the same
+      // pointer, of the same type. Anything before it that may write the
+      // slot ends the search - a store that overlaps it (a byte of it
+      // through another GEP), a store to a pointer that is not a slot, a
+      // call that may write memory (a memory intrinsic with a computed
+      // address) - and the load stays a load.
       for (size_t j = i; j-- > 0;) {
+        if (auto *call = llvm::dyn_cast<llvm::CallBase>(insts[j])) {
+          if (call->mayWriteToMemory()) break;
+          continue;
+        }
         auto *store = llvm::dyn_cast<llvm::StoreInst>(insts[j]);
-        if (!store) continue;
+        if (!store) {
+          if (insts[j]->mayWriteToMemory()) break;
+          continue;
+        }
+        auto *val = store->getValueOperand();
         if (store->getPointerOperand() == load_ptr) {
-          forwards.push_back({load, store->getValueOperand()});
+          if (val->getType() == load->getType())
+            forwards.push_back({load, val});
           break;
         }
+        const auto store_slot = slot(store->getPointerOperand(), val->getType());
+        if (!store_slot || (store_slot->first < load_slot->second &&
+                            load_slot->first < store_slot->second))
+          break;
       }
     }
   }
@@ -3292,6 +3362,7 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
 
   // Eliminate stack memory accesses (RSP ptr → direct load/store).
   EliminateStackMemoryAccesses(func);
+  PinMemoryIntrinsics(func);
 
   // Remove the state_store snapshot clobber (see RemoveStateStoreClobbers):
   // without this, the trailing snapshot store to a modified register
@@ -3359,6 +3430,7 @@ llvm::Function *OptimizeFlatSSAFunction(llvm::Module *module,
   func = module->getFunction(func->getName());
   if (func) {
     EliminateStackMemoryAccesses(func);
+    PinMemoryIntrinsics(func);
     // Normalize RSP-derived pointers and forward store→load pairs.
     ForwardStackSlotAccesses(func);
     // Final cleanup: DCE dead stores and instructions. (No SimplifyCFG: the
