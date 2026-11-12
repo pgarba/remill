@@ -254,6 +254,21 @@ int main(int argc, char *argv[]) {
   g_address = GetUInt64Arg(argc, argv, "--address", 0);
   g_entry_address = GetUInt64Arg(argc, argv, "--entry_address", 0);
   g_bytes = GetArgValue(argc, argv, "--bytes");
+  // --bytes @FILE: the hex from a file. A long trace's bytes don't fit a
+  // command line (32767 characters on Windows).
+  if (!g_bytes.empty() && g_bytes[0] == '@') {
+    std::ifstream in(g_bytes.substr(1), std::ios::binary);
+    if (!in) {
+      std::cerr << "Unable to read --bytes " << g_bytes << std::endl;
+      return EXIT_FAILURE;
+    }
+    std::string hex((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+    hex.erase(std::remove_if(hex.begin(), hex.end(),
+                             [](unsigned char c) { return std::isspace(c); }),
+              hex.end());
+    g_bytes = std::move(hex);
+  }
   g_ir_out = GetArgValue(argc, argv, "--ir_out");
   g_bc_out = GetArgValue(argc, argv, "--bc_out");
   g_link_blocks = GetArgValue(argc, argv, "--link_blocks");
