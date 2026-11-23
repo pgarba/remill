@@ -3292,11 +3292,16 @@ void InlineFlatISelCalls(llvm::Module *module) {
 // round-trip the register was unmodified, so leave them alone). This keeps the
 // computed result for every opcode regardless of store ordering.
 static void RemoveStateStoreClobbers(llvm::Function &F) {
+  // Across the whole function, not block by block: an opcode whose body
+  // branches (a shift by CL: `if count == 0 return`, else write dst) leaves
+  // its computed dst stores in the branches and the snapshot write-back alone
+  // in the block after them. Looked at per block, that block had no computed
+  // store to the slot, so the snapshot stayed and put the pre-instruction
+  // value back: every shift and rotate by CL was lifted as a no-op.
+  llvm::DenseMap<llvm::AllocaInst *, std::vector<llvm::StoreInst *>> stores;
+  llvm::DenseMap<llvm::AllocaInst *, llvm::SmallDenseSet<llvm::Value *>>
+      loaded_values;
   for (auto &BB : F) {
-    llvm::DenseMap<llvm::AllocaInst *, std::vector<llvm::StoreInst *>> stores;
-    llvm::DenseMap<llvm::AllocaInst *,
-                   llvm::SmallDenseSet<llvm::Value *>>
-        loaded_values;
     for (auto &I : BB) {
       if (auto *SI = llvm::dyn_cast<llvm::StoreInst>(&I)) {
         llvm::Value *Base =
@@ -3314,37 +3319,40 @@ static void RemoveStateStoreClobbers(llvm::Function &F) {
         }
       }
     }
-    auto IsRoundTrip = [&](llvm::StoreInst *SI,
-                           const llvm::SmallDenseSet<llvm::Value *> &Loaded) {
-      llvm::Value *V = SI->getValueOperand();
-      while (auto *BC = llvm::dyn_cast<llvm::BitCastInst>(V)) {
-        V = BC->getOperand(0);
-      }
-      return Loaded.count(V) != 0;
-    };
-    for (auto &KV : stores) {
-      auto *AI = KV.first;
-      const auto &S = KV.second;
-      if (S.size() < 2) {
-        continue;
-      }
-      auto LI = loaded_values.find(AI);
-      if (LI == loaded_values.end()) {
-        continue;
-      }
-      const auto &Loaded = LI->second;
-      bool HasComputed =
-          std::any_of(S.begin(), S.end(),
-                      [&](llvm::StoreInst *SI) { return !IsRoundTrip(SI, Loaded); });
-      if (!HasComputed) {
-        // Every store to this slot just writes back a value read from it; the
-        // instruction did not modify the register. Leave the round-trips alone.
-        continue;
-      }
-      for (auto *SI : S) {
-        if (IsRoundTrip(SI, Loaded)) {
-          SI->eraseFromParent();
-        }
+  }
+  auto IsRoundTrip = [&](llvm::StoreInst *SI,
+                         const llvm::SmallDenseSet<llvm::Value *> &Loaded) {
+    llvm::Value *V = SI->getValueOperand();
+    while (auto *BC = llvm::dyn_cast<llvm::BitCastInst>(V)) {
+      V = BC->getOperand(0);
+    }
+    return Loaded.count(V) != 0;
+  };
+  for (auto &KV : stores) {
+    auto *AI = KV.first;
+    const auto &S = KV.second;
+    if (S.size() < 2) {
+      continue;
+    }
+    auto LI = loaded_values.find(AI);
+    if (LI == loaded_values.end()) {
+      continue;
+    }
+    const auto &Loaded = LI->second;
+    bool HasComputed =
+        std::any_of(S.begin(), S.end(),
+                    [&](llvm::StoreInst *SI) { return !IsRoundTrip(SI, Loaded); });
+    if (!HasComputed) {
+      // Every store to this slot just writes back a value read from it; the
+      // instructions did not modify the register. Leave the round-trips alone.
+      continue;
+    }
+    // A round-trip writes back a value read from the slot: the snapshot of a
+    // wrapper that didn't change the register is the value the slot already
+    // holds, and one of a wrapper that did is the clobber. Either way it can go.
+    for (auto *SI : S) {
+      if (IsRoundTrip(SI, Loaded)) {
+        SI->eraseFromParent();
       }
     }
   }
