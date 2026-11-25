@@ -561,6 +561,7 @@ class Printer {
   Expr Float(const llvm::ConstantFP *c);
   Expr FCompare(const llvm::FCmpInst *c);
   Expr Vector(const llvm::Instruction *i);
+  std::optional<Expr> TableLoad(const llvm::LoadInst *l);
   // a vector value's lane k, as its C type (FP lanes as double / float)
   Expr LaneOf(const llvm::Value *v, unsigned k);
   // bits as the lane type, and back: double <-> uint64_t through memcpy
@@ -710,6 +711,33 @@ Expr Printer::LaneOf(const llvm::Value *v, unsigned k) {
   return lt->isIntegerTy() ? bits : FromBits(lt, bits);
 }
 
+// A load from a constant integer table (LLVM's switch.table globals):
+// ((const T[]){a, b, ...})[index].
+std::optional<Expr> Printer::TableLoad(const llvm::LoadInst *l) {
+  auto *g = llvm::dyn_cast<llvm::GEPOperator>(l->getPointerOperand());
+  if (!g || g->getNumIndices() != 2) {
+    return std::nullopt;
+  }
+  auto *gv = llvm::dyn_cast<llvm::GlobalVariable>(g->getPointerOperand());
+  auto *z = llvm::dyn_cast<llvm::ConstantInt>(g->getOperand(1));
+  if (!gv || !gv->isConstant() || !gv->hasDefinitiveInitializer() || !z || !z->isZero()) {
+    return std::nullopt;
+  }
+  // integer elements (poison reads as 0), loaded whole -- as an integer or as a vector's bits
+  auto *at = llvm::dyn_cast<llvm::ArrayType>(gv->getValueType());
+  llvm::Type *et = at ? at->getElementType() : nullptr;
+  if (!et || !et->isIntegerTy() || Width(et) > 64 || Width(et) != Width(l->getType()) ||
+      !UType(Width(et)).size()) {
+    return std::nullopt;
+  }
+  std::string s = "((const " + UType(Width(et)) + "[]){";
+  for (unsigned k = 0; k < at->getNumElements(); ++k) {
+    auto *e = llvm::dyn_cast_or_null<llvm::ConstantInt>(gv->getInitializer()->getAggregateElement(k));
+    s += (k ? ", " : "") + (e ? Hex(e->getZExtValue()) : std::string("0"));
+  }
+  return Expr{s + "})[" + Value(g->getOperand(2)).s + "]", kPrimary};
+}
+
 // Vector instructions, on the vector's bits: lanes in and out by shifts.
 Expr Printer::Vector(const llvm::Instruction *i) {
   using llvm::Instruction;
@@ -783,6 +811,23 @@ Expr Printer::Vector(const llvm::Instruction *i) {
       case Instruction::Sub: case Instruction::FSub: op = "-"; break;
       case Instruction::Mul: case Instruction::FMul: op = "*"; prec = kMultiplicative; break;
       case Instruction::FDiv: op = "/"; prec = kMultiplicative; break;
+      case Instruction::Shl: case Instruction::LShr: case Instruction::AShr: {  // lane by lane, in the lane type
+        if (!lt->isIntegerTy()) {
+          return Unsupported(i);
+        }
+        std::vector<std::optional<Expr>> lanes(n);
+        for (unsigned k = 0; k < n; ++k) {
+          const Expr cnt = LaneOf(b->getOperand(1), k);
+          Expr l = LaneOf(b->getOperand(0), k);
+          if (b->getOpcode() == Instruction::AShr) {
+            l = Cast("int" + std::to_string(ew) + "_t", l);
+          } else if (ew < 32) {
+            l = Cast("uint32_t", l);
+          }
+          lanes[k] = Cast(CType(lt), Bin(l, b->getOpcode() == Instruction::Shl ? "<<" : ">>", cnt, kShift));
+        }
+        return pack(lanes);
+      }
       default: return Unsupported(i);
     }
     std::vector<std::optional<Expr>> lanes(n);
@@ -1238,6 +1283,9 @@ Expr Printer::Compute(const llvm::Instruction *i) {
     }
     if (!CType(i->getType()).size()) {
       return Unsupported(i);
+    }
+    if (auto t = TableLoad(l)) {
+      return *t;
     }
     return Deref(i->getType(), l->getPointerOperand());
   }
